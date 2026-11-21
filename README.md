@@ -21,7 +21,8 @@ reflash the Arduino.
 - Profiles (one per ride): create, duplicate, rename, delete, import and export as JSON. Changes save
   automatically to `%APPDATA%\RideSimsPanel\profiles`.
 - Per control: what it does when operated (hold the key while active, tap on activation, tap one key on and
-  another off for switches, or nothing), the key or combo (type it or press **Rec**), and the lamp behavior.
+  another off for switches, or nothing), the key or combo (type it or press **Rec**), and the lamp behavior
+  (off, on, flashing, on while active, on while not active). The E-stop lamp flashes by default.
 - E-stop reset: how long Restart must be held, the key sent the entire time, and the tone played while holding.
   Release early and it aborts and stops the tone. The Restart lamp blinks while a reset is needed and goes
   solid while you hold.

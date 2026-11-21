@@ -241,7 +241,7 @@ class Engine:
                 continue
             mode = self.profile.bindings[inp.id].lamp
             active = self._bit(inp.id)
-            on = {"off": False, "on": True, "active": active, "inactive": not active}[mode]
+            on = {"off": False, "on": True, "flash": blink_on, "active": active, "inactive": not active}[mode]
             if inp.id == RESTART.id and self.estop_latched and not self._bit("estop"):
                 # prompt the operator to hold restart: blink, solid while holding
                 on = True if self._reset_start is not None else blink_on

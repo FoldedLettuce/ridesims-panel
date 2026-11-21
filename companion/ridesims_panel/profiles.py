@@ -19,10 +19,11 @@ MODE_LABELS = {
     "tap": "Tap key when activated",
     "tap_both": "Tap key on / tap other key off",
 }
-LAMP_MODES = ["off", "on", "active", "inactive"]
+LAMP_MODES = ["off", "on", "flash", "active", "inactive"]
 LAMP_LABELS = {
     "off": "Always off",
     "on": "Always on",
+    "flash": "Always flashing",
     "active": "On while active",
     "inactive": "On while NOT active",
 }
@@ -65,7 +66,7 @@ def default_binding(input_id: str) -> Binding:
     if kind == "power":
         return Binding(mode="none")
     if kind == "estop":
-        return Binding(mode="hold")
+        return Binding(mode="hold", lamp="flash")
     if kind == "switch":
         return Binding(mode="tap_both", lamp="off")
     return Binding(mode="tap")

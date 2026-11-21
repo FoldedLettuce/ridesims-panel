@@ -229,3 +229,16 @@ def test_profile_roundtrip(tmp_path):
     bad["volume"] = 999
     r = Profile.from_dict(json.loads(json.dumps(bad)))
     assert r.volume == 30 and r.bindings["gates"].mode == "tap_both"
+
+
+def test_estop_lamp_always_flashes_by_default():
+    r = Rig()
+    r.engine.set_profile(Profile(name="fresh"))
+    r.power_up()
+    lamp = 1 << INPUT_BY_ID["estop"].lamp_bit
+    seen = set()
+    for _ in range(6):
+        r.advance(0.5)
+        lamps = [x for x in r.sent if x.startswith("L ")]
+        seen.add(bool(int(lamps[-1].split()[1], 16) & lamp))
+    assert seen == {True, False}
