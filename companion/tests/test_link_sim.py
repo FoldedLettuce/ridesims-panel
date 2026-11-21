@@ -48,8 +48,8 @@ class FakeFirmware(threading.Thread):
                 line = line.decode().strip()
                 self.received.append(line)
                 if line == "?":
-                    self.send("HELLO RSP 2 0.0.1")
-                    self.send("C 1 2500 25 20 0 1")
+                    self.send("HELLO RSP 3 0.0.2")
+                    self.send("C 1 2500 25 20 0 1 1000 1")
                     self.send("S 0 0")
                     self.send("T 5")
 
@@ -86,7 +86,7 @@ def test_end_to_end():
 
     link.start(os.ttyname(slave))
     pump(600)
-    assert got.get("fw") == "0.0.1", link.status
+    assert got.get("fw") == "0.0.2", link.status
     assert got.get("tracks") == 5
     assert got["cfg"].lamp_test_ms == 2500 and got["cfg"].idle_flash == 1
     assert "V 20" in fw.received
@@ -110,3 +110,29 @@ def test_end_to_end():
 
     link.stop()
     fw.running = False
+
+
+def test_unplug_does_not_crash():
+    """Regression: unplugging used to recurse in the error handler until the process died."""
+    app = QApplication.instance() or QApplication([])
+    master, slave = pty.openpty()
+    tty.setraw(slave)
+    fw = FakeFirmware(master)
+    fw.start()
+    link = PanelLink()
+    events = []
+    link.connected.connect(lambda *a: events.append("connected"))
+    link.disconnected.connect(lambda: events.append("disconnected"))
+    link.start(os.ttyname(slave))
+    pump(600)
+    assert events == ["connected"]
+    hb = QTimer()                    # the engine sends a heartbeat every second, like this
+    hb.timeout.connect(lambda: link.send("H"))
+    hb.start(100)
+    fw.running = False
+    os.close(master)                 # the "unplug"
+    pump(1500)
+    hb.stop()
+    assert "disconnected" in events
+    assert not link.is_ready
+    link.stop()

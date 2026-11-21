@@ -5,14 +5,16 @@ supplies the send_line() callback that writes to the serial port.
 """
 
 import time
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
-from .keys import KeySender, parse_combo
-from .profiles import Profile
-from .protocol import ESTOP, INPUTS, INPUT_BY_ID, POWER, RESTART
+from .keys import KeySender
+from .profiles import Binding, Profile
+from .protocol import (
+    DISPATCH_IDS, DISPATCH_LEFT, DISPATCH_RIGHT, ESTOP, INPUTS, INPUT_BY_ID,
+    POWER, RESTART, PanelConfig,
+)
 
 HEARTBEAT_S = 1.0
-BLINK_S = 0.5
 
 
 class Engine:
@@ -30,6 +32,7 @@ class Engine:
 
         self.profile = Profile()
         self.output_enabled: Callable[[], bool] = lambda: True
+        self.flash_s = 1.0                # time per flash phase, comes from the panel settings
 
         self.connected = False
         self.mask = 0
@@ -49,12 +52,24 @@ class Engine:
     def log(self, text: str) -> None:
         self._log(text)
 
+    def set_panel_config(self, cfg: PanelConfig) -> None:
+        self.flash_s = max(0.1, cfg.flash_ms / 1000.0)
+
     def _bit(self, input_id: str) -> bool:
         return bool((self.mask >> INPUT_BY_ID[input_id].bit) & 1)
 
     @property
     def powered(self) -> bool:
         return self._bit("power_key")
+
+    @property
+    def linked(self) -> bool:
+        return self.profile.dispatch_mode != "separate"
+
+    def _dispatch_active(self, mask: int) -> bool:
+        left = bool(mask >> DISPATCH_LEFT.bit & 1)
+        right = bool(mask >> DISPATCH_RIGHT.bit & 1)
+        return (left and right) if self.profile.dispatch_mode == "both" else (left or right)
 
     @property
     def reset_progress(self) -> Optional[float]:
@@ -149,8 +164,16 @@ class Engine:
         for inp in INPUTS:
             if inp.id == POWER.id:
                 continue
+            if self.linked and inp.id in DISPATCH_IDS:
+                continue
             if changed & (1 << inp.bit):
                 self._edge(inp.id, bool(mask & (1 << inp.bit)))
+
+        if self.linked:
+            new, prev = self._dispatch_active(mask), self._dispatch_active(old)
+            if new != prev:
+                self.log(f"Dispatch (linked): {'ACTIVE' if new else 'inactive'}")
+                self._apply_binding(self.profile.dispatch, new)
 
     def _sync_live_state(self) -> None:
         """Called when the panel becomes ready: make the sim match the current switch positions."""
@@ -161,26 +184,20 @@ class Engine:
         for inp in INPUTS:
             if inp.id == POWER.id:
                 continue
-            b = self.profile.bindings[inp.id]
-            active = self._bit(inp.id)
-            if b.mode == "hold" and active:
-                self._press(b.key)
-            elif b.mode == "tap_both":
-                self._tap(b.key if active else b.key2)
+            if self.linked and inp.id in DISPATCH_IDS:
+                continue
+            self._sync_binding(self.profile.bindings[inp.id], self._bit(inp.id))
+        if self.linked:
+            self._sync_binding(self.profile.dispatch, self._dispatch_active(self.mask))
+
+    def _sync_binding(self, b: Binding, active: bool) -> None:
+        if b.mode == "hold" and active:
+            self._press(b.key)
+        elif b.mode == "tap_both":
+            self._tap(b.key if active else b.key2)
 
     # -------------------------------------------------------------- edges --
-    def _edge(self, input_id: str, active: bool) -> None:
-        name = INPUT_BY_ID[input_id].label
-        self.log(f"{name}: {'ACTIVE' if active else 'inactive'}")
-
-        if input_id == ESTOP.id:
-            if active:
-                self.estop_latched = True
-                self._cancel_reset(stop_tone=True)
-        if input_id == RESTART.id and self._handle_restart_for_reset(active):
-            return
-
-        b = self.profile.bindings[input_id]
+    def _apply_binding(self, b: Binding, active: bool) -> None:
         if b.mode == "hold":
             if active:
                 self._press(b.key)
@@ -191,6 +208,18 @@ class Engine:
                 self._tap(b.key)
         elif b.mode == "tap_both":
             self._tap(b.key if active else b.key2)
+
+    def _edge(self, input_id: str, active: bool) -> None:
+        name = INPUT_BY_ID[input_id].label
+        self.log(f"{name}: {'ACTIVE' if active else 'inactive'}")
+
+        if input_id == ESTOP.id:
+            if active:
+                self.estop_latched = True
+                self._cancel_reset(stop_tone=True)
+        if input_id == RESTART.id and self._handle_restart_for_reset(active):
+            return
+        self._apply_binding(self.profile.bindings[input_id], active)
 
     # ------------------------------------------------------- e-stop reset --
     def _handle_restart_for_reset(self, active: bool) -> bool:
@@ -234,16 +263,24 @@ class Engine:
     def _lamp_mask(self) -> int:
         if not self.live:
             return 0
-        blink_on = int(self._clock() / BLINK_S) % 2 == 0
+        blink_on = int(self._clock() / self.flash_s) % 2 == 0
+        linked = self.linked
+        dispatch_active = self._dispatch_active(self.mask)
         mask = 0
         for inp in INPUTS:
             if inp.lamp_bit is None:
                 continue
-            mode = self.profile.bindings[inp.id].lamp
-            active = self._bit(inp.id)
-            on = {"off": False, "on": True, "flash": blink_on, "active": active, "inactive": not active}[mode]
+            if linked and inp.id in DISPATCH_IDS:
+                b, active = self.profile.dispatch, dispatch_active
+            else:
+                b, active = self.profile.bindings[inp.id], self._bit(inp.id)
+            on = {"off": False, "on": True, "flash": blink_on,
+                  "active": active, "inactive": not active}[b.lamp]
+            # E-stop sequence: pressed -> E-stop lamp solid. Released but not reset yet ->
+            # E-stop lamp stays solid and Restart flashes. Holding Restart -> Restart solid.
+            if inp.id == ESTOP.id and self.estop_latched and b.lamp != "off":
+                on = True
             if inp.id == RESTART.id and self.estop_latched and not self._bit("estop"):
-                # prompt the operator to hold restart: blink, solid while holding
                 on = True if self._reset_start is not None else blink_on
             if on:
                 mask |= 1 << inp.lamp_bit

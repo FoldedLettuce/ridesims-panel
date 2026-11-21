@@ -47,6 +47,7 @@ class PanelLink(QObject):
         self.port_name = "auto"
         self.want_connection = False
         self._handshaken = False
+        self._closing = False
         self._tried: List[str] = []
 
         self._hello_timer = QTimer(self)
@@ -77,11 +78,11 @@ class PanelLink(QObject):
         self.want_connection = False
         self._retry.stop()
         self._hello_timer.stop()
-        self._close()
+        self._close(graceful=True)
         self.status.emit("Disconnected")
 
     def send(self, line: str) -> None:
-        if self._port.isOpen():
+        if self._port.isOpen() and not self._closing:
             self._port.write((line + "\n").encode("ascii"))
 
     # ----------------------------------------------------------- internals --
@@ -112,7 +113,11 @@ class PanelLink(QObject):
         if not self._port.open(QSerialPort.ReadWrite):
             self.status.emit(f"Could not open {name}: {self._port.errorString()}")
             return
-        self._port.setDataTerminalReady(True)   # Leonardo only talks while DTR is set
+        # Leonardo only talks while DTR is set. Ignore errors from this call itself
+        # (some virtual ports do not support it).
+        self._port.blockSignals(True)
+        self._port.setDataTerminalReady(True)
+        self._port.blockSignals(False)
         self._buf.clear()
         self._handshaken = False
         self.status.emit(f"Connecting on {name}...")
@@ -122,21 +127,41 @@ class PanelLink(QObject):
     def _on_hello_timeout(self) -> None:
         if self._port.isOpen() and not self._handshaken:
             self.status.emit(f"{self._port.portName()} did not answer, trying next")
-            self._close()
+            self._close(graceful=True)
 
-    def _close(self) -> None:
+    def _close(self, graceful: bool) -> None:
+        """Close the port. graceful=False is for a port that is already dead (unplugged):
+        do not touch its control lines, because that raises more errors."""
+        if self._closing:
+            return
+        self._closing = True
         was = self._handshaken
-        if self._port.isOpen():
-            self._port.setDataTerminalReady(False)
-            self._port.close()
+        self._port.blockSignals(True)   # no error signals while tearing down
+        try:
+            if self._port.isOpen():
+                if graceful:
+                    self._port.setDataTerminalReady(False)
+                self._port.close()
+        finally:
+            self._port.blockSignals(False)
+            self._closing = False
         self._handshaken = False
+        self._buf.clear()
         if was:
             self.disconnected.emit()
 
     def _on_error(self, err) -> None:
-        if err == QSerialPort.SerialPortError.ResourceError:   # unplugged
+        E = QSerialPort.SerialPortError
+        # Errors that mean the port is gone. Windows reports an unplug as ResourceError,
+        # PermissionError or DeviceNotFoundError depending on timing.
+        fatal = (E.ResourceError, E.PermissionError, E.DeviceNotFoundError, E.ReadError, E.WriteError)
+        if err not in fatal or self._closing:
+            return
+        if self._port.isOpen():
+            # Unplugged ports report ResourceError, PermissionError, ReadError, WriteError...
+            # Defer the close so we are not tearing the port down inside its own error signal.
             self.status.emit("Panel unplugged")
-            self._close()
+            QTimer.singleShot(0, lambda: self._close(graceful=False))
 
     def _on_ready_read(self) -> None:
         self._buf.extend(bytes(self._port.readAll()))

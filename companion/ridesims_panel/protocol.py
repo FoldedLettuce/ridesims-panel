@@ -31,6 +31,9 @@ INPUT_BY_ID = {i.id: i for i in INPUTS}
 
 POWER = INPUT_BY_ID["power_key"]
 ESTOP = INPUT_BY_ID["estop"]
+DISPATCH_LEFT = INPUT_BY_ID["dispatch_left"]
+DISPATCH_RIGHT = INPUT_BY_ID["dispatch_right"]
+DISPATCH_IDS = (DISPATCH_LEFT.id, DISPATCH_RIGHT.id)
 RESTART = INPUT_BY_ID["restart"]
 
 
@@ -43,10 +46,12 @@ class PanelConfig:
     volume: int = 20
     idle_on: int = 0        # lamp bits steady on when no companion is connected
     idle_flash: int = 0x01  # lamp bits flashing when no companion is connected (e-stop)
+    flash_ms: int = 1000    # time per flash phase (on, then off)
+    ack_required: int = 1   # 1 = lamp test runs until Restart is pressed
 
     def to_line(self) -> str:
         return (f"C {self.startup_track} {self.lamp_test_ms} {self.debounce_ms} "
-                f"{self.volume} {self.idle_on:X} {self.idle_flash:X}")
+                f"{self.volume} {self.idle_on:X} {self.idle_flash:X} {self.flash_ms} {int(self.ack_required)}")
 
 
 # (lamp bit, label) sorted by bit, for the UI
@@ -73,11 +78,12 @@ def parse_line(line: str) -> Optional[Tuple]:
             return ("hello", int(parts[2]), parts[3])
         if parts[0] == "S" and len(parts) >= 3:
             return ("state", int(parts[1], 16), parts[2] == "1")
-        if parts[0] == "C" and len(parts) >= 7:
+        if parts[0] == "C" and len(parts) >= 9:
             return ("config", PanelConfig(
                 startup_track=int(parts[1]), lamp_test_ms=int(parts[2]),
                 debounce_ms=int(parts[3]), volume=int(parts[4]),
-                idle_on=int(parts[5], 16), idle_flash=int(parts[6], 16)))
+                idle_on=int(parts[5], 16), idle_flash=int(parts[6], 16),
+                flash_ms=int(parts[7]), ack_required=1 if int(parts[8]) else 0))
         if parts[0] == "T" and len(parts) >= 2:
             return ("tracks", int(parts[1]))
         if parts[0] == "E":

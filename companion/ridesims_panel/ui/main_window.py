@@ -4,20 +4,25 @@ import json
 import time
 from typing import Dict, Optional
 
-from PySide6.QtCore import Qt, QTimer
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGroupBox,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGroupBox,
     QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMainWindow, QMessageBox,
-    QPlainTextEdit, QProgressBar, QPushButton, QSlider, QSpinBox, QTableWidget,
+    QPlainTextEdit, QProgressBar, QProgressDialog, QPushButton, QSlider, QSpinBox, QTableWidget,
     QVBoxLayout, QWidget, QGridLayout, QTabWidget,
 )
 
-from .. import __version__
+from .. import PROTOCOL_VERSION, __version__
+from .. import updater as upd
 from ..engine import Engine
 from ..keys import make_sender
 from ..link import PanelLink, describe_port, list_ports
 from ..profiles import (
-    LAMP_LABELS, LAMP_MODES, MODE_LABELS, MODES, Profile, ProfileStore,
+    DISPATCH_LABELS, DISPATCH_MODES, LAMP_LABELS, LAMP_MODES, MODE_LABELS, MODES,
+    Profile, ProfileStore,
 )
 from ..protocol import INPUTS, LAMPS, PanelConfig
 from .widgets import KeyEdit
@@ -29,18 +34,24 @@ class MainWindow(QMainWindow):
     def __init__(self, store: Optional[ProfileStore] = None) -> None:
         super().__init__()
         self.setWindowTitle(f"RideSims Panel Companion v{__version__}")
-        self.resize(900, 800)
+        self.resize(960, 900)
 
         self.store = store or ProfileStore()
         self.profile = Profile()
         self._loading = False
         self._fw_version = ""
+        self._proto = PROTOCOL_VERSION
+        self._cfg: Optional[PanelConfig] = None
+        self._manual_update = False
+        self._dl_dialog: Optional[QProgressDialog] = None
+        self.updater = upd.Updater(self)
 
         self.link = PanelLink(self)
         self.engine = Engine(make_sender(), self.link.send, log=self.append_log)
         self.engine.output_enabled = self._output_enabled
 
         self._build_ui()
+        self._build_menu()
         self._wire()
 
         name = self.store.settings.get("active_profile") or ""
@@ -62,6 +73,8 @@ class MainWindow(QMainWindow):
 
         if self.chk_auto.isChecked():
             self._connect()
+        if self.store.settings.get("check_updates", True):
+            QTimer.singleShot(2500, lambda: self._check_updates(manual=False))
 
     # ------------------------------------------------------------------ UI --
     def _build_ui(self) -> None:
@@ -107,12 +120,22 @@ class MainWindow(QMainWindow):
         row.addWidget(lbl)
         v.addLayout(row)
 
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Dispatch buttons:"))
+        self.cmb_dispatch = QComboBox()
+        for m in DISPATCH_MODES:
+            self.cmb_dispatch.addItem(DISPATCH_LABELS[m], m)
+        row.addWidget(self.cmb_dispatch)
+        row.addStretch(1)
+        v.addLayout(row)
+
         # bindings table
         self.table = QTableWidget(len(INPUTS), 6)
         self.table.setHorizontalHeaderLabels(
             ["Control", "Live", "When it is operated", "Key", "Key when switched off", "Lamp"]
         )
         self.table.verticalHeader().setVisible(False)
+        self.table.setMinimumHeight(10 * 34 + 34)
         self.table.setSelectionMode(QAbstractItemView.NoSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         hh = self.table.horizontalHeader()
@@ -128,9 +151,12 @@ class MainWindow(QMainWindow):
         self.key_edits: Dict[str, KeyEdit] = {}
         self.key2_edits: Dict[str, KeyEdit] = {}
         self.lamp_boxes: Dict[str, Optional[QComboBox]] = {}
+        self.name_items: Dict[str, object] = {}
 
         for r, inp in enumerate(INPUTS):
-            self.table.setItem(r, COL_NAME, self._ro_item(inp.label))
+            item = self._ro_item(inp.label)
+            self.table.setItem(r, COL_NAME, item)
+            self.name_items[inp.id] = item
             live = QLabel("●")
             live.setAlignment(Qt.AlignCenter)
             self._set_live(live, False, inp.kind == "estop")
@@ -216,12 +242,20 @@ class MainWindow(QMainWindow):
         g2.addWidget(self.spn_startup, 0, 1)
         self.btn_startup_prev = QPushButton("Preview")
         g2.addWidget(self.btn_startup_prev, 0, 2)
-        g2.addWidget(QLabel("Lamp test length"), 0, 3)
+        self.chk_ack = QCheckBox("Lamp test waits until Restart is pressed")
+        g2.addWidget(self.chk_ack, 0, 3, 1, 2)
+        g2.addWidget(QLabel("Lamp test length if it does not wait"), 2, 3)
         self.spn_test = QDoubleSpinBox()
         self.spn_test.setRange(0.0, 10.0)
         self.spn_test.setSingleStep(0.5)
         self.spn_test.setSuffix(" s")
-        g2.addWidget(self.spn_test, 0, 4)
+        g2.addWidget(self.spn_test, 2, 4)
+        g2.addWidget(QLabel("Flash speed (each on / off phase)"), 3, 3)
+        self.spn_flash = QSpinBox()
+        self.spn_flash.setRange(100, 5000)
+        self.spn_flash.setSingleStep(100)
+        self.spn_flash.setSuffix(" ms")
+        g2.addWidget(self.spn_flash, 3, 4)
         g2.addWidget(QLabel("Debounce"), 1, 0)
         self.spn_deb = QSpinBox()
         self.spn_deb.setRange(5, 100)
@@ -232,7 +266,7 @@ class MainWindow(QMainWindow):
         self.sld_boot_vol.setRange(0, 30)
         g2.addWidget(self.sld_boot_vol, 1, 4)
 
-        g2.addWidget(QLabel("Lamps when no companion is running:"), 2, 0, 1, 5)
+        g2.addWidget(QLabel("Lamps when no companion is running:"), 4, 0, 1, 5)
         lamp_row = QHBoxLayout()
         self.idle_boxes: Dict[int, QComboBox] = {}
         for bit_, label in LAMPS:
@@ -247,7 +281,7 @@ class MainWindow(QMainWindow):
             col.addWidget(cb)
             lamp_row.addLayout(col)
             self.idle_boxes[bit_] = cb
-        g2.addLayout(lamp_row, 3, 0, 1, 5)
+        g2.addLayout(lamp_row, 5, 0, 1, 5)
 
         row2 = QHBoxLayout()
         self.btn_write_cfg = QPushButton("Write to panel")
@@ -255,7 +289,7 @@ class MainWindow(QMainWindow):
         self.lbl_cfg.setStyleSheet("color: gray;")
         row2.addWidget(self.btn_write_cfg)
         row2.addWidget(self.lbl_cfg, 1)
-        g2.addLayout(row2, 4, 0, 1, 5)
+        g2.addLayout(row2, 6, 0, 1, 5)
         set_page = QWidget()
         sv = QVBoxLayout(set_page)
         sv.addWidget(grp2)
@@ -278,7 +312,7 @@ class MainWindow(QMainWindow):
         self.log_box = QPlainTextEdit()
         self.log_box.setReadOnly(True)
         self.log_box.setMaximumBlockCount(300)
-        self.log_box.setMaximumHeight(130)
+        self.log_box.setMaximumHeight(90)
         v.addWidget(self.log_box)
 
     @staticmethod
@@ -304,6 +338,11 @@ class MainWindow(QMainWindow):
         self.chk_send.toggled.connect(lambda on: self._setting("send_keys", on))
         self.chk_pause.toggled.connect(lambda on: self._setting("pause_when_focused", on))
 
+        self.cmb_dispatch.currentIndexChanged.connect(lambda _i: self._on_dispatch_mode())
+        self.chk_ack.toggled.connect(lambda _on: self._refresh_cfg_enabled())
+        self.updater.check_done.connect(self._on_update_checked)
+        self.updater.progress.connect(self._on_update_progress)
+        self.updater.download_done.connect(self._on_update_downloaded)
         self.cmb_profile.activated.connect(self._on_profile_chosen)
         self.btn_new.clicked.connect(self._new_profile)
         self.btn_dup.clicked.connect(self._dup_profile)
@@ -381,6 +420,7 @@ class MainWindow(QMainWindow):
 
     def _on_connected(self, port: str, proto: int, fw: str) -> None:
         self._fw_version = fw
+        self._proto = proto
         self.append_log(f"connected on {port}, firmware {fw}, protocol {proto}")
         self.engine.on_connected()
         self._update_status()
@@ -402,12 +442,22 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _set_cfg_enabled(self, on: bool) -> None:
-        for w in (self.spn_startup, self.btn_startup_prev, self.spn_test, self.spn_deb,
+        self._cfg_enabled = on
+        for w in (self.spn_startup, self.btn_startup_prev, self.spn_deb, self.spn_flash, self.chk_ack,
                   self.sld_boot_vol, self.btn_write_cfg, *self.idle_boxes.values()):
             w.setEnabled(on)
+        self._refresh_cfg_enabled()
+
+    def _refresh_cfg_enabled(self) -> None:
+        # the timed lamp test length only matters when the test does not wait for Restart
+        self.spn_test.setEnabled(getattr(self, "_cfg_enabled", False) and not self.chk_ack.isChecked())
 
     def _on_config(self, c: PanelConfig) -> None:
+        self._cfg = c
+        self.engine.set_panel_config(c)
         self.spn_startup.setValue(c.startup_track)
+        self.spn_flash.setValue(c.flash_ms)
+        self.chk_ack.setChecked(bool(c.ack_required))
         self.spn_test.setValue(c.lamp_test_ms / 1000.0)
         self.spn_deb.setValue(c.debounce_ms)
         self.sld_boot_vol.setValue(c.volume)
@@ -430,7 +480,11 @@ class MainWindow(QMainWindow):
             debounce_ms=self.spn_deb.value(),
             volume=self.sld_boot_vol.value(),
             idle_on=on, idle_flash=flash,
+            flash_ms=self.spn_flash.value(),
+            ack_required=1 if self.chk_ack.isChecked() else 0,
         )
+        self._cfg = cfg
+        self.engine.set_panel_config(cfg)
         self.link.send(cfg.to_line())
         self.lbl_cfg.setText("Saved to panel")
 
@@ -441,10 +495,18 @@ class MainWindow(QMainWindow):
         if not self.link.is_ready:
             return
         e = self.engine
+        if self._proto != PROTOCOL_VERSION:
+            self.lbl_status.setText(
+                f"Connected - FIRMWARE OUT OF DATE (protocol v{self._proto}), reflash the Arduino")
+            self.lbl_status.setStyleSheet("font-weight: bold; color: #e03131;")
+            return
         if not e.powered:
             state, color = "panel OFF", "#868e96"
         elif not e.fw_ready:
-            state, color = "starting up (lamp test)", "#f08c00"
+            if self._cfg is not None and self._cfg.ack_required:
+                state, color = "lamp test, press Restart to continue", "#f08c00"
+            else:
+                state, color = "starting up (lamp test)", "#f08c00"
         elif e.estop_latched:
             state, color = "E-STOP, hold Restart to reset", "#e03131"
         else:
@@ -476,9 +538,31 @@ class MainWindow(QMainWindow):
             p = Profile(name=name)
         self.profile = p
         self._setting("active_profile", p.name)
+        self._populate_widgets()
+        self.engine.set_profile(p)
+
+    @property
+    def _dispatch_linked(self) -> bool:
+        return self.profile.dispatch_mode != "separate"
+
+    def _binding(self, input_id: str):
+        """The binding a table row edits. When dispatch is linked the left row edits the shared one."""
+        if self._dispatch_linked and input_id == "dispatch_left":
+            return self.profile.dispatch
+        return self.profile.bindings[input_id]
+
+    def _populate_widgets(self) -> None:
+        p = self.profile
         self._loading = True
+        self.cmb_dispatch.setCurrentIndex(DISPATCH_MODES.index(p.dispatch_mode))
         for inp in INPUTS:
-            b = p.bindings[inp.id]
+            b = self._binding(inp.id)
+            label = inp.label
+            if self._dispatch_linked and inp.id == "dispatch_left":
+                label = "Dispatch (linked)"
+            elif self._dispatch_linked and inp.id == "dispatch_right":
+                label = "Dispatch right (linked)"
+            self.name_items[inp.id].setText(label)
             self.mode_boxes[inp.id].setCurrentIndex(MODES.index(b.mode))
             self.key_edits[inp.id].set_text(b.key)
             self.key2_edits[inp.id].set_text(b.key2)
@@ -491,7 +575,6 @@ class MainWindow(QMainWindow):
         self.sld_vol.setValue(p.volume)
         self.lbl_vol.setText(str(p.volume))
         self._loading = False
-        self.engine.set_profile(p)
 
     def _save(self) -> None:
         if not self._loading:
@@ -501,15 +584,32 @@ class MainWindow(QMainWindow):
         self._load_profile(self.cmb_profile.currentText())
 
     def _update_row_enabled(self, input_id: str) -> None:
-        mode = self.profile.bindings[input_id].mode
-        self.key_edits[input_id].setEnabled(mode != "none")
-        self.key2_edits[input_id].setEnabled(mode == "tap_both")
+        mode = self._binding(input_id).mode
+        # the right dispatch row is just a mirror of the left one while they are linked
+        follows = self._dispatch_linked and input_id == "dispatch_right"
+        self.mode_boxes[input_id].setEnabled(not follows)
+        self.key_edits[input_id].setEnabled(not follows and mode != "none")
+        self.key2_edits[input_id].setEnabled(not follows and mode == "tap_both")
+        if self.lamp_boxes[input_id] is not None:
+            self.lamp_boxes[input_id].setEnabled(not follows)
+        tip = "Linked to the Dispatch (linked) row above" if follows else ""
+        for w in (self.mode_boxes[input_id], self.key_edits[input_id], self.key2_edits[input_id]):
+            w.setToolTip(tip)
+
+    def _on_dispatch_mode(self) -> None:
+        if self._loading:
+            return
+        self.engine.release_all()
+        self.profile.dispatch_mode = self.cmb_dispatch.currentData()
+        self._save()
+        self._populate_widgets()
+        self.engine.set_profile(self.profile)
 
     def _on_mode(self, input_id: str) -> None:
         if self._loading:
             return
         self.engine.release_all()
-        self.profile.bindings[input_id].mode = self.mode_boxes[input_id].currentData()
+        self._binding(input_id).mode = self.mode_boxes[input_id].currentData()
         self._update_row_enabled(input_id)
         self._save()
 
@@ -517,7 +617,7 @@ class MainWindow(QMainWindow):
         if self._loading:
             return
         self.engine.release_all()
-        b = self.profile.bindings[input_id]
+        b = self._binding(input_id)
         if second:
             b.key2 = text
         else:
@@ -527,7 +627,7 @@ class MainWindow(QMainWindow):
     def _on_lamp(self, input_id: str) -> None:
         if self._loading:
             return
-        self.profile.bindings[input_id].lamp = self.lamp_boxes[input_id].currentData()
+        self._binding(input_id).lamp = self.lamp_boxes[input_id].currentData()
         self._save()
 
     def _on_reset_changed(self) -> None:
@@ -606,6 +706,86 @@ class MainWindow(QMainWindow):
         if path:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(self.profile.to_dict(), f, indent=2)
+
+    # ---------------------------------------------------------- menu/update --
+    def _build_menu(self) -> None:
+        m = self.menuBar().addMenu("&Help")
+        act = QAction("Check for updates...", self)
+        act.triggered.connect(lambda: self._check_updates(manual=True))
+        m.addAction(act)
+        self.act_auto_update = QAction("Check for updates on launch", self)
+        self.act_auto_update.setCheckable(True)
+        self.act_auto_update.setChecked(bool(self.store.settings.get("check_updates", True)))
+        self.act_auto_update.toggled.connect(lambda on: self._setting("check_updates", on))
+        m.addAction(self.act_auto_update)
+        m.addSeparator()
+        folder = QAction("Open profiles and settings folder", self)
+        folder.triggered.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.store.root))))
+        m.addAction(folder)
+        about = QAction("About", self)
+        about.triggered.connect(lambda: QMessageBox.about(
+            self, "About",
+            f"RideSims Panel Companion v{__version__}\n\nProfiles and settings are kept in:\n{self.store.root}"))
+        m.addAction(about)
+
+    def _check_updates(self, manual: bool) -> None:
+        self._manual_update = manual
+        if manual:
+            self.statusBar().showMessage("Checking for updates...", 4000)
+        self.updater.check()
+
+    def _on_update_checked(self, info, err: str) -> None:
+        manual = self._manual_update
+        if err:
+            self.append_log(f"update check: {err}")
+            if manual:
+                QMessageBox.information(self, "Updates", err)
+            return
+        if info is None:
+            self.append_log(f"up to date (v{__version__})")
+            if manual:
+                QMessageBox.information(self, "Updates", f"You're up to date (v{__version__}).")
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Update available")
+        box.setText(f"Version {info.version} is available. You have v{__version__}.")
+        notes = (info.notes or "").strip()
+        if notes:
+            box.setInformativeText(notes[:600])
+        if upd.can_self_update():
+            go = box.addButton("Update now", QMessageBox.AcceptRole)
+        else:
+            go = box.addButton("Open download page", QMessageBox.AcceptRole)
+        box.addButton("Later", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not go:
+            return
+        if not upd.can_self_update():
+            QDesktopServices.openUrl(QUrl(info.page_url))
+            return
+        self._dl_dialog = QProgressDialog("Downloading update...", "", 0, 100, self)
+        self._dl_dialog.setCancelButton(None)
+        self._dl_dialog.setWindowModality(Qt.WindowModal)
+        self._dl_dialog.setMinimumDuration(0)
+        self._dl_dialog.setValue(0)
+        self.updater.download(info)
+
+    def _on_update_progress(self, done: int, total: int) -> None:
+        if self._dl_dialog is not None and total > 0:
+            self._dl_dialog.setValue(min(99, int(done * 100 / total)))
+
+    def _on_update_downloaded(self, path: str, err: str) -> None:
+        if self._dl_dialog is not None:
+            self._dl_dialog.close()
+            self._dl_dialog = None
+        if err:
+            QMessageBox.warning(self, "Update failed", err)
+            return
+        QMessageBox.information(self, "Update", "Downloaded. The app will restart to finish the update.")
+        self.engine.release_all()
+        self.link.stop()
+        upd.swap_and_relaunch(Path(path))
+        QApplication.quit()
 
     # --------------------------------------------------------------- close --
     def closeEvent(self, ev) -> None:

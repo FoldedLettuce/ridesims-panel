@@ -246,10 +246,131 @@ def test_estop_lamp_always_flashes_by_default():
 
 def test_parse_config_roundtrip():
     from ridesims_panel.protocol import PanelConfig
-    msg = parse_line("C 1 2500 25 20 0 1")
+    msg = parse_line("C 1 2500 25 20 0 1 1000 1")
     assert msg[0] == "config"
     c = msg[1]
-    assert (c.startup_track, c.lamp_test_ms, c.debounce_ms, c.volume, c.idle_on, c.idle_flash) == (1, 2500, 25, 20, 0, 1)
-    assert c.to_line() == "C 1 2500 25 20 0 1"
-    assert parse_line(PanelConfig(3, 1000, 30, 15, 0x4A, 0x01).to_line())[1].idle_on == 0x4A
-    assert parse_line("C 1 2") is None or parse_line("C 1 2")[0] != "config"
+    assert (c.startup_track, c.lamp_test_ms, c.debounce_ms, c.volume) == (1, 2500, 25, 20)
+    assert (c.idle_on, c.idle_flash, c.flash_ms, c.ack_required) == (0, 1, 1000, 1)
+    assert c.to_line() == "C 1 2500 25 20 0 1 1000 1"
+    assert parse_line(PanelConfig(3, 1000, 30, 15, 0x4A, 0x01, 750, 0).to_line())[1].flash_ms == 750
+    # old v2 firmware line (6 values) is not understood
+    assert parse_line("C 1 2500 25 20 0 1") is None
+
+
+def lamp_bit(name):
+    return 1 << INPUT_BY_ID[name].lamp_bit
+
+
+def last_lamps(r):
+    return int([x for x in r.sent if x.startswith("L ")][-1].split()[1], 16)
+
+
+def test_flash_speed_follows_panel_setting():
+    from ridesims_panel.protocol import PanelConfig
+    r = Rig()
+    r.engine.set_panel_config(PanelConfig(flash_ms=1000))
+    r.engine.set_profile(Profile(name="fresh"))
+    r.power_up()
+    r.t = 1000.0
+    r.advance(0.0)
+    first = bool(last_lamps(r) & lamp_bit("estop"))
+    r.advance(0.6)                       # still inside the same 1 s phase
+    assert bool(last_lamps(r) & lamp_bit("estop")) == first
+    r.advance(0.5)                       # now past 1 s, phase flipped
+    assert bool(last_lamps(r) & lamp_bit("estop")) != first
+
+
+def test_estop_lamp_sequence():
+    r = Rig()
+    r.engine.set_profile(Profile(name="fresh"))
+    r.power_up()
+    estop, restart = lamp_bit("estop"), lamp_bit("restart")
+    r.state("power_key", "estop")        # pressed: e-stop solid
+    for _ in range(5):
+        r.advance(0.5)
+        assert last_lamps(r) & estop
+    r.state("power_key")                 # released: e-stop stays solid, restart flashes
+    seen = set()
+    for _ in range(6):
+        r.advance(0.5)
+        assert last_lamps(r) & estop
+        seen.add(bool(last_lamps(r) & restart))
+    assert seen == {True, False}
+    r.state("power_key", "restart")      # holding: restart solid
+    for _ in range(3):
+        r.advance(0.5)
+        assert last_lamps(r) & restart and last_lamps(r) & estop
+    r.advance(2.5)                       # reset completes: back to normal
+    assert not r.engine.estop_latched
+
+
+def test_dispatch_separate_by_default():
+    r = Rig()
+    r.p.bindings["dispatch_left"] = Binding("hold", "a")
+    r.p.bindings["dispatch_right"] = Binding("hold", "b")
+    r.engine.set_profile(r.p)
+    r.power_up()
+    r.state("power_key", "dispatch_left")
+    assert r.sender.held == {"a"}
+    r.state("power_key", "dispatch_left", "dispatch_right")
+    assert r.sender.held == {"a", "b"}
+
+
+def test_dispatch_linked_either():
+    r = Rig()
+    r.p.dispatch_mode = "either"
+    r.p.dispatch = Binding("hold", "d")
+    r.engine.set_profile(r.p)
+    r.power_up()
+    r.state("power_key", "dispatch_right")
+    assert r.sender.held == {"d"}
+    r.state("power_key", "dispatch_right", "dispatch_left")
+    assert r.sender.held == {"d"}          # still one key
+    r.state("power_key", "dispatch_left")
+    assert r.sender.held == {"d"}          # one still down
+    r.state("power_key")
+    assert r.sender.held == set()
+
+
+def test_dispatch_linked_both():
+    r = Rig()
+    r.p.dispatch_mode = "both"
+    r.p.dispatch = Binding("hold", "d")
+    r.engine.set_profile(r.p)
+    r.power_up()
+    r.state("power_key", "dispatch_left")
+    assert r.sender.held == set()          # one hand is not enough
+    r.state("power_key", "dispatch_left", "dispatch_right")
+    assert r.sender.held == {"d"}
+    r.state("power_key", "dispatch_right")
+    assert r.sender.held == set()
+
+
+def test_dispatch_linked_lamps_follow_link():
+    r = Rig()
+    r.p.dispatch_mode = "both"
+    r.p.dispatch = Binding("hold", "d", lamp="active")
+    r.engine.set_profile(r.p)
+    r.power_up()
+    r.state("power_key", "dispatch_left")
+    r.advance(0.0)
+    assert not last_lamps(r) & lamp_bit("dispatch_left")
+    r.state("power_key", "dispatch_left", "dispatch_right")
+    r.advance(0.0)
+    assert last_lamps(r) & lamp_bit("dispatch_left") and last_lamps(r) & lamp_bit("dispatch_right")
+
+
+def test_profile_dispatch_roundtrip_and_user_default(tmp_path):
+    p = Profile(name="x")
+    p.dispatch_mode = "both"
+    p.dispatch = Binding("tap", "space")
+    q = Profile.from_dict(json.loads(json.dumps(p.to_dict())))
+    assert q.dispatch_mode == "both" and q.dispatch.key == "space"
+    # defaults match the starting profile: restart/dispatch hold, e-stop tap with flashing lamp
+    f = Profile(name="fresh")
+    assert f.bindings["restart"].mode == "hold" and f.bindings["dispatch_left"].mode == "hold"
+    assert f.bindings["estop"].mode == "tap" and f.bindings["estop"].lamp == "flash"
+    # an older profile file without dispatch settings still loads
+    old = f.to_dict()
+    del old["dispatch_mode"], old["dispatch"]
+    assert Profile.from_dict(old).dispatch_mode == "separate"

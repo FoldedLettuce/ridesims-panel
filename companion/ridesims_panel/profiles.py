@@ -19,6 +19,12 @@ MODE_LABELS = {
     "tap": "Tap key when activated",
     "tap_both": "Tap key on / tap other key off",
 }
+DISPATCH_MODES = ["separate", "either", "both"]
+DISPATCH_LABELS = {
+    "separate": "Separate (each button has its own binding)",
+    "either": "Linked: either button dispatches",
+    "both": "Linked: both buttons must be pressed",
+}
 LAMP_MODES = ["off", "on", "flash", "active", "inactive"]
 LAMP_LABELS = {
     "off": "Always off",
@@ -62,12 +68,14 @@ class EstopReset:
 
 
 def default_binding(input_id: str) -> Binding:
-    kind = INPUT_BY_ID[input_id].kind
-    if kind == "power":
+    """Starting point for a new profile (keys are left blank on purpose)."""
+    if input_id == "power_key":
         return Binding(mode="none")
-    if kind == "estop":
-        return Binding(mode="hold", lamp="flash")
-    if kind == "switch":
+    if input_id == "estop":
+        return Binding(mode="tap", lamp="flash")
+    if input_id in ("restart", "dispatch_left", "dispatch_right"):
+        return Binding(mode="hold")
+    if INPUT_BY_ID[input_id].kind == "switch":
         return Binding(mode="tap_both", lamp="off")
     return Binding(mode="tap")
 
@@ -76,6 +84,8 @@ def default_binding(input_id: str) -> Binding:
 class Profile:
     name: str = "New profile"
     bindings: Dict[str, Binding] = field(default_factory=dict)
+    dispatch_mode: str = "separate"
+    dispatch: Binding = field(default_factory=lambda: Binding(mode="hold"))   # used when the dispatch buttons are linked
     estop_reset: EstopReset = field(default_factory=EstopReset)
     volume: int = 20       # DFPlayer volume 0-30
     tap_ms: int = 60       # how long a "tap" holds the key down
@@ -91,6 +101,8 @@ class Profile:
             "volume": self.volume,
             "tap_ms": self.tap_ms,
             "estop_reset": self.estop_reset.to_dict(),
+            "dispatch_mode": self.dispatch_mode,
+            "dispatch": self.dispatch.to_dict(),
             "bindings": {k: v.to_dict() for k, v in self.bindings.items()},
         }
 
@@ -105,6 +117,10 @@ class Profile:
             key=str(er.get("key", "")),
             tone=max(1, min(255, int(er.get("tone", 2)))),
         )
+        dm = d.get("dispatch_mode", "separate")
+        p.dispatch_mode = dm if dm in DISPATCH_MODES else "separate"
+        if isinstance(d.get("dispatch"), dict):
+            p.dispatch = Binding.from_dict(d["dispatch"], Binding(mode="hold"))
         for input_id, bd in d.get("bindings", {}).items():
             if input_id in INPUT_BY_ID and isinstance(bd, dict):
                 p.bindings[input_id] = Binding.from_dict(bd, default_binding(input_id))
@@ -136,6 +152,7 @@ class ProfileStore:
         "autoconnect": True,
         "send_keys": True,
         "pause_when_focused": True,
+        "check_updates": True,
     }
 
     def __init__(self, root: Optional[Path] = None) -> None:
