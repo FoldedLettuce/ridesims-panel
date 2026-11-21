@@ -68,12 +68,12 @@ If the app ever closes unexpectedly, look at `crash.log` in the profiles and set
 
 ## Build and release
 
-Pushing to `main` builds the `.exe` and the firmware hex in GitHub Actions. The first time a new version
+Pushing to `main` builds the `.exe` in GitHub Actions and test-compiles the firmware. The first time a new version
 number shows up, the workflow also publishes a **GitHub release** with both files, named with the version:
 
 ```
 RideSimsPanel-0.0.2.exe
-RideSimsPanel-Firmware-0.0.2.hex
+RideSimsPanel-Firmware-0.0.2.ino
 ```
 
 To release: bump `__version__` in `companion/ridesims_panel/__init__.py`, commit, push to `main`. A version that
@@ -86,7 +86,8 @@ updater does not trigger that).
 
 Close the companion app (and any serial monitor) first, since they hold the COM port. Then open
 `firmware/RideSimsPanel/RideSimsPanel.ino` in the Arduino IDE, pick **Arduino Leonardo**, and upload.
-Or flash the `.hex` from a release with any AVR uploader. Wiring is in [docs/WIRING.md](docs/WIRING.md) and the
+Releases include the sketch as `RideSimsPanel-Firmware-<version>.ino`. The Arduino IDE will offer to put it in a
+folder of the same name when you open it, which is fine. Wiring is in [docs/WIRING.md](docs/WIRING.md) and the
 serial protocol in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
 ## Running from source

@@ -37,15 +37,16 @@ jobs:
           arduino-cli core update-index
           arduino-cli core install arduino:avr
           arduino-cli compile --fqbn arduino:avr:leonardo --output-dir out firmware/RideSimsPanel
-      - name: Name the hex with the firmware version
+      # The compile above is only a check. What gets published is the .ino source,
+      # named with the firmware version so downloads do not pile up as duplicates.
+      - name: Name the sketch with the firmware version
         run: |
           FW=$(sed -n 's/^#define FW_VERSION "\(.*\)"/\1/p' firmware/RideSimsPanel/RideSimsPanel.ino)
-          cp out/RideSimsPanel.ino.hex "RideSimsPanel-Firmware-$FW.hex"
-          echo "FW=$FW" >> "$GITHUB_ENV"
+          cp firmware/RideSimsPanel/RideSimsPanel.ino "RideSimsPanel-Firmware-$FW.ino"
       - uses: actions/upload-artifact@v4
         with:
           name: firmware
-          path: RideSimsPanel-Firmware-*.hex
+          path: RideSimsPanel-Firmware-*.ino
 
   windows:
     runs-on: windows-latest
@@ -71,7 +72,7 @@ jobs:
           name: companion-windows
           path: companion/dist/RideSimsPanel-*.exe
 
-  # Publishes a GitHub release (with the exe and hex) the first time a version number
+  # Publishes a GitHub release (with the exe and the firmware .ino) the first time a version number
   # appears on main, or when a v* tag is pushed. A version that already has a release is skipped.
   release:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
