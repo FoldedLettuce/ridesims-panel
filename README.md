@@ -7,14 +7,20 @@ Current version: **0.0.1**. Versions stay below 1.0 until the main release is fi
 
 ## How it works
 
-- **Firmware** (`firmware/RideSimsPanel`) is deliberately dumb and should almost never change. It reads the
+- **Firmware** (`firmware/RideSimsPanel`) is deliberately dumb and never needs to change after the wiring is done. It reads the
   10 controls, drives the 7 button lamps, plays audio through a DFPlayer Mini, and runs the power-on sequence
   (panel-on tone + lamp test). That is all.
 - **Companion app** (`companion/`) is where everything is configured. It turns control changes into keystrokes,
   runs the E-stop reset hold, drives the lamps, and stores one profile per ride.
 
 Because all behavior lives in the companion, shipping a new feature means shipping a new `.exe`. You do not
-reflash the Arduino.
+reflash the Arduino. The only hard-coded thing is the pin wiring.
+
+A few panel-level settings are stored on the Arduino itself (EEPROM) and set from the companion's
+**Panel settings** section: power-on tone, lamp test length, debounce, volume at power-up, and which lamps
+are steady or flashing when no companion is running. With no companion, the panel still powers on, plays the
+tone, runs the lamp test, and then shows that standalone lamp pattern (default: E-stop lamp flashing). It
+cannot send keystrokes without the companion.
 
 ## Companion app (v0.0.1)
 

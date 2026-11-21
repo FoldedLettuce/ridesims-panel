@@ -48,7 +48,8 @@ class FakeFirmware(threading.Thread):
                 line = line.decode().strip()
                 self.received.append(line)
                 if line == "?":
-                    self.send("HELLO RSP 1 0.0.1")
+                    self.send("HELLO RSP 2 0.0.1")
+                    self.send("C 1 2500 25 20 0 1")
                     self.send("S 0 0")
                     self.send("T 5")
 
@@ -77,6 +78,7 @@ def test_end_to_end():
     link.connected.connect(lambda port, proto, fwv: (got.update(fw=fwv), eng.on_connected()))
     link.state.connect(eng.on_state)
     link.tracks.connect(lambda n: got.update(tracks=n))
+    link.config.connect(lambda c: got.update(cfg=c))
 
     tick = QTimer()
     tick.timeout.connect(eng.tick)
@@ -86,6 +88,7 @@ def test_end_to_end():
     pump(600)
     assert got.get("fw") == "0.0.1", link.status
     assert got.get("tracks") == 5
+    assert got["cfg"].lamp_test_ms == 2500 and got["cfg"].idle_flash == 1
     assert "V 20" in fw.received
 
     power = 1 << INPUT_BY_ID["power_key"].bit

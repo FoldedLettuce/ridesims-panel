@@ -34,6 +34,7 @@ class PanelLink(QObject):
     status = Signal(str)                   # human readable connection status
     state = Signal(int, bool)              # input mask, ready
     tracks = Signal(int)
+    config = Signal(object)                # PanelConfig
     firmware_error = Signal(str)
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
@@ -164,5 +165,7 @@ class PanelLink(QObject):
             self.state.emit(msg[1], msg[2])
         elif kind == "tracks":
             self.tracks.emit(msg[1])
+        elif kind == "config":
+            self.config.emit(msg[1])
         elif kind == "error":
             self.firmware_error.emit(msg[1])

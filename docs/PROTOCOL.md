@@ -1,4 +1,4 @@
-# Serial protocol (v1)
+# Serial protocol (v2)
 
 USB serial, 115200 8N1, ASCII lines ending in `\n`. The companion must set DTR (the Leonardo only talks while a
 program has the port open). `PROTOCOL_VERSION` in the firmware and `ridesims_panel/__init__.py` must match.
@@ -10,6 +10,7 @@ program has the port open). `PROTOCOL_VERSION` in the firmware and `ridesims_pan
 | `HELLO RSP <protocol> <fw_version>` | sent when the port opens and in reply to `?` |
 | `S <mask_hex> <ready>` | input state, sent on every change. Bit set = ACTIVE. `ready` is 1 once the power-on sequence has finished |
 | `T <count>` | number of files the DFPlayer found on the SD card |
+| `C <track> <test_ms> <debounce_ms> <volume> <idle_on_hex> <idle_flash_hex>` | panel settings stored in EEPROM, sent after HELLO and after a set |
 | `E <text>` | error or debug text |
 
 Input bits: 0 power key, 1 function, 2 restraints unlock, 3 restart, 4 e-stop, 5 dispatch left, 6 gates,
@@ -26,9 +27,14 @@ Input bits: 0 power key, 1 function, 2 restraints unlock, 3 restart, 4 e-stop, 5
 | `X` | stop audio |
 | `V <0-30>` | volume |
 | `LT` | run the lamp test again (only while powered) |
+| `C <same 6 values>` | store panel settings in EEPROM (the firmware replies with a `C` line) |
 
 ## Power-on sequence (the only behavior in the firmware)
 
-Power key on: play track 1, all lamps on for 2.5 s (lamp test), then lamps follow `L` commands and `S` reports
-`ready = 1`. Power key off: stop audio, all lamps off. The companion ignores every control except the power key
-until `ready = 1`.
+Power key on: play the startup track, all lamps on for the lamp test time, then `S` reports `ready = 1`.
+Lamps then follow `L` commands from the companion. If no companion is connected (or it stops sending
+heartbeats), the lamps show the stored standalone pattern instead (steady `idle_on`, flashing `idle_flash`,
+default: e-stop lamp flashing). Power key off: stop audio, all lamps off. The companion ignores every control
+except the power key until `ready = 1`.
+
+Defaults after a fresh flash: track 1, 2500 ms lamp test, 25 ms debounce, volume 20, e-stop lamp flashing.

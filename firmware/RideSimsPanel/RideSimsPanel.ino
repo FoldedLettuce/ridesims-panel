@@ -2,13 +2,16 @@
   RideSims Panel firmware
   Target: Arduino Leonardo (ATmega32U4)
 
-  Design goal: this sketch is generic and should (almost) never need to change.
-  All behavior (keybinds, lamp logic, hold-to-reset, tones) lives in the
-  companion app. The firmware only:
+  Design goal: this sketch is generic and should never need to change after
+  the wiring is done. All behavior (keybinds, lamp logic, hold-to-reset,
+  tones) lives in the companion app. The firmware only:
     - debounces the 10 inputs and reports them over USB serial
     - drives the 7 button lamps on command
     - plays DFPlayer Mini tracks on command
     - runs the power-on sequence (panel-on tone + lamp test)
+    - keeps a few panel-level settings in EEPROM, set from the companion:
+      startup track, lamp test length, debounce, boot volume, and the
+      standalone lamp pattern used when no companion is connected
 
   Serial protocol (115200 8N1, newline terminated ASCII), see docs/PROTOCOL.md
 
@@ -16,6 +19,8 @@
     HELLO RSP <protocol> <fw_version>
     S <input_mask_hex> <ready>     inputs changed (bit set = ACTIVE), ready=1 once startup is done
     T <count>                      number of audio files found on the SD card
+    C <track> <test_ms> <debounce_ms> <volume> <idle_on_hex> <idle_flash_hex>
+                                   panel settings (sent with HELLO and after a set)
     E <text>                       error / debug text
 
   PC -> Firmware
@@ -26,12 +31,15 @@
     X            stop audio
     V <0-30>     volume
     LT           run the lamp test again (only while powered)
+    C <6 values> store panel settings (same order as above), saved to EEPROM
 
   Wiring (see docs/WIRING.md)
 */
 
 #define FW_VERSION "0.0.1"
-#define PROTOCOL_VERSION 1
+#define PROTOCOL_VERSION 2
+
+#include <EEPROM.h>
 
 // ---------------------------------------------------------------- inputs ----
 // Order here defines the bit order in the S message. Do not reorder.
@@ -66,14 +74,23 @@ const uint8_t LAMP_PINS[NUM_LAMPS] = {A0, A1, A2, A3, A4, A5, 12};
 
 // ----------------------------------------------------------------- audio ----
 // DFPlayer Mini on hardware Serial1 (Leonardo D0 = RX1, D1 = TX1).
-// Track 1 (/MP3/0001.mp3) is the panel-on tone played by the firmware.
-const uint8_t TRACK_STARTUP = 1;
-const uint8_t DEFAULT_VOLUME = 20;
 
-// ---------------------------------------------------------------- timing ----
-const uint16_t DEBOUNCE_MS = 25;
-const uint16_t LAMP_TEST_MS = 2500;
+// -------------------------------------------------------------- settings ----
+// Stored in EEPROM, changed from the companion app (C command).
+struct Config {
+  uint8_t magic;
+  uint8_t startupTrack;    // /MP3/NNNN.mp3 played at power-on
+  uint16_t lampTestMs;     // all lamps on for this long at power-on
+  uint8_t debounceMs;
+  uint8_t volume;          // DFPlayer volume used at boot (0-30)
+  uint8_t idleOn;          // lamps steady on when no companion is connected
+  uint8_t idleFlash;       // lamps flashing when no companion is connected
+};
+const uint8_t CONFIG_MAGIC = 0xA6;
+Config cfg;
+
 const uint16_t HEARTBEAT_TIMEOUT_MS = 4000;
+const uint16_t FLASH_HALF_PERIOD_MS = 500;
 
 // ----------------------------------------------------------------- state ----
 uint16_t rawMask = 0;        // last raw read
@@ -91,6 +108,7 @@ uint32_t lastHeartbeat = 0;
 bool heardCompanion = false;
 
 bool usbWasOpen = false;
+bool lastFlashPhase = false;
 uint16_t trackCount = 0;
 
 // DFPlayer response parser
@@ -98,8 +116,76 @@ uint8_t dfBuf[10];
 uint8_t dfPos = 0;
 
 // serial line buffer
-char lineBuf[24];
+char lineBuf[48];
 uint8_t linePos = 0;
+
+// -------------------------------------------------------------- config ------
+void sanitizeConfig() {
+  if (cfg.startupTrack < 1) cfg.startupTrack = 1;
+  if (cfg.lampTestMs > 10000) cfg.lampTestMs = 10000;
+  if (cfg.debounceMs < 5) cfg.debounceMs = 5;
+  if (cfg.debounceMs > 100) cfg.debounceMs = 100;
+  if (cfg.volume > 30) cfg.volume = 30;
+  cfg.idleOn &= 0x7F;
+  cfg.idleFlash &= 0x7F;
+}
+
+void loadConfig() {
+  EEPROM.get(0, cfg);
+  if (cfg.magic != CONFIG_MAGIC) {
+    cfg.magic = CONFIG_MAGIC;
+    cfg.startupTrack = 1;
+    cfg.lampTestMs = 2500;
+    cfg.debounceMs = 25;
+    cfg.volume = 20;
+    cfg.idleOn = 0;
+    cfg.idleFlash = 0x01;      // e-stop lamp flashes
+    EEPROM.put(0, cfg);
+  }
+  sanitizeConfig();
+}
+
+void sendConfig() {
+  Serial.print(F("C "));
+  Serial.print(cfg.startupTrack);
+  Serial.print(' ');
+  Serial.print(cfg.lampTestMs);
+  Serial.print(' ');
+  Serial.print(cfg.debounceMs);
+  Serial.print(' ');
+  Serial.print(cfg.volume);
+  Serial.print(' ');
+  Serial.print(cfg.idleOn, HEX);
+  Serial.print(' ');
+  Serial.println(cfg.idleFlash, HEX);
+}
+
+bool nextNumber(char *&p, uint8_t base, uint32_t &out) {
+  while (*p == ' ') p++;
+  if (*p == 0) return false;
+  char *end;
+  out = strtoul(p, &end, base);
+  if (end == p) return false;
+  p = end;
+  return true;
+}
+
+void setConfig(char *p) {
+  uint32_t v[6];
+  const uint8_t bases[6] = {10, 10, 10, 10, 16, 16};
+  for (uint8_t i = 0; i < 6; i++) {
+    if (!nextNumber(p, bases[i], v[i])) return;   // malformed, ignore the whole line
+  }
+  cfg.startupTrack = v[0] > 255 ? 255 : v[0];
+  cfg.lampTestMs = v[1] > 60000 ? 60000 : v[1];
+  cfg.debounceMs = v[2] > 255 ? 255 : v[2];
+  cfg.volume = v[3] > 255 ? 255 : v[3];
+  cfg.idleOn = v[4] & 0xFF;
+  cfg.idleFlash = v[5] & 0xFF;
+  sanitizeConfig();
+  EEPROM.put(0, cfg);
+  sendConfig();
+}
 
 // ------------------------------------------------------------- DFPlayer -----
 void dfSend(uint8_t cmd, uint16_t param) {
@@ -155,7 +241,14 @@ void applyLamps() {
   uint8_t mask = 0;
   if (powered) {
     if (lampTest) mask = 0xFF;
-    else if (ready) mask = companionLamps;
+    else if (ready) {
+      if (heardCompanion) mask = companionLamps;
+      else {
+        // standalone, no companion: stored idle pattern
+        mask = cfg.idleOn;
+        if ((millis() / FLASH_HALF_PERIOD_MS) % 2 == 0) mask |= cfg.idleFlash;
+      }
+    }
   }
   for (uint8_t i = 0; i < NUM_LAMPS; i++) {
     digitalWrite(LAMP_PINS[i], (mask >> i) & 1 ? HIGH : LOW);
@@ -168,7 +261,7 @@ void powerOn() {
   ready = false;
   lampTest = true;
   lampTestStart = millis();
-  dfPlay(TRACK_STARTUP);
+  dfPlay(cfg.startupTrack);
   applyLamps();
   sendState();
 }
@@ -183,7 +276,7 @@ void powerOff() {
 }
 
 void runPowerSequence() {
-  if (powered && lampTest && millis() - lampTestStart >= LAMP_TEST_MS) {
+  if (powered && lampTest && millis() - lampTestStart >= cfg.lampTestMs) {
     lampTest = false;
     ready = true;
     applyLamps();
@@ -203,7 +296,7 @@ void readInputs() {
       rawChangedAt[i] = now;
     }
     bool stable = (stableMask >> i) & 1;
-    if (rawBit[i] != stable && now - rawChangedAt[i] >= DEBOUNCE_MS) {
+    if (rawBit[i] != stable && now - rawChangedAt[i] >= cfg.debounceMs) {
       if (rawBit[i]) stableMask |= (1u << i);
       else stableMask &= ~(1u << i);
       changed = true;
@@ -219,6 +312,7 @@ void readInputs() {
 void handleLine(char *s) {
   if (s[0] == '?') {
     sendHello();
+    sendConfig();
     sendState();
     if (trackCount) { Serial.print(F("T ")); Serial.println(trackCount); }
     else dfSend(0x48, 0);
@@ -227,6 +321,10 @@ void handleLine(char *s) {
   heardCompanion = true;
   lastHeartbeat = millis();
   if (s[0] == 'H') return;
+  if (s[0] == 'C') {
+    setConfig(s + 1);
+    return;
+  }
   if (s[0] == 'L' && s[1] == 'T') {
     if (powered) { lampTest = true; ready = false; lampTestStart = millis(); applyLamps(); sendState(); }
     return;
@@ -272,11 +370,12 @@ void setup() {
     digitalWrite(LAMP_PINS[i], LOW);
   }
 
+  loadConfig();
   Serial.begin(115200);
   Serial1.begin(9600);
 
   delay(1000);                 // DFPlayer boot time
-  dfVolume(DEFAULT_VOLUME);
+  dfVolume(cfg.volume);
   delay(50);
   dfSend(0x48, 0);             // ask for file count
 
@@ -306,6 +405,13 @@ void loop() {
     applyLamps();
   }
   usbWasOpen = usbOpen;
+
+  // standalone lamp flashing needs a refresh when the phase flips
+  bool phase = (millis() / FLASH_HALF_PERIOD_MS) % 2 == 0;
+  if (phase != lastFlashPhase) {
+    lastFlashPhase = phase;
+    if (powered && ready && !heardCompanion && cfg.idleFlash) applyLamps();
+  }
 
   if (usbOpen) readSerial();
 

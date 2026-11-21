@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGroupBox,
     QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMainWindow, QMessageBox,
     QPlainTextEdit, QProgressBar, QPushButton, QSlider, QSpinBox, QTableWidget,
-    QVBoxLayout, QWidget, QGridLayout,
+    QVBoxLayout, QWidget, QGridLayout, QTabWidget,
 )
 
 from .. import __version__
@@ -19,7 +19,7 @@ from ..link import PanelLink, describe_port, list_ports
 from ..profiles import (
     LAMP_LABELS, LAMP_MODES, MODE_LABELS, MODES, Profile, ProfileStore,
 )
-from ..protocol import INPUTS
+from ..protocol import INPUTS, LAMPS, PanelConfig
 from .widgets import KeyEdit
 
 COL_NAME, COL_LIVE, COL_MODE, COL_KEY, COL_KEY2, COL_LAMP = range(6)
@@ -29,7 +29,7 @@ class MainWindow(QMainWindow):
     def __init__(self, store: Optional[ProfileStore] = None) -> None:
         super().__init__()
         self.setWindowTitle(f"RideSims Panel Companion v{__version__}")
-        self.resize(900, 780)
+        self.resize(900, 800)
 
         self.store = store or ProfileStore()
         self.profile = Profile()
@@ -158,7 +158,11 @@ class MainWindow(QMainWindow):
                 self.table.setItem(r, COL_LAMP, self._ro_item("no lamp"))
                 self.lamp_boxes[inp.id] = None
             self.table.setRowHeight(r, 34)
-        v.addWidget(self.table, 1)
+        self.tabs = QTabWidget()
+        ctl_page = QWidget()
+        cv = QVBoxLayout(ctl_page)
+        cv.setContentsMargins(0, 6, 0, 0)
+        cv.addWidget(self.table, 1)
 
         # e-stop reset + audio
         grp = QGroupBox("E-stop reset and audio")
@@ -200,7 +204,65 @@ class MainWindow(QMainWindow):
         self.bar.setRange(0, 1000)
         self.bar.setTextVisible(False)
         g.addWidget(self.bar, 3, 1, 1, 3)
-        v.addWidget(grp)
+        cv.addWidget(grp)
+        self.tabs.addTab(ctl_page, "Controls")
+
+        # panel-level settings, stored on the Arduino
+        grp2 = QGroupBox("Panel settings (stored on the panel itself, same for every profile)")
+        g2 = QGridLayout(grp2)
+        g2.addWidget(QLabel("Power-on tone (track #)"), 0, 0)
+        self.spn_startup = QSpinBox()
+        self.spn_startup.setRange(1, 99)
+        g2.addWidget(self.spn_startup, 0, 1)
+        self.btn_startup_prev = QPushButton("Preview")
+        g2.addWidget(self.btn_startup_prev, 0, 2)
+        g2.addWidget(QLabel("Lamp test length"), 0, 3)
+        self.spn_test = QDoubleSpinBox()
+        self.spn_test.setRange(0.0, 10.0)
+        self.spn_test.setSingleStep(0.5)
+        self.spn_test.setSuffix(" s")
+        g2.addWidget(self.spn_test, 0, 4)
+        g2.addWidget(QLabel("Debounce"), 1, 0)
+        self.spn_deb = QSpinBox()
+        self.spn_deb.setRange(5, 100)
+        self.spn_deb.setSuffix(" ms")
+        g2.addWidget(self.spn_deb, 1, 1)
+        g2.addWidget(QLabel("Volume at power-up"), 1, 3)
+        self.sld_boot_vol = QSlider(Qt.Horizontal)
+        self.sld_boot_vol.setRange(0, 30)
+        g2.addWidget(self.sld_boot_vol, 1, 4)
+
+        g2.addWidget(QLabel("Lamps when no companion is running:"), 2, 0, 1, 5)
+        lamp_row = QHBoxLayout()
+        self.idle_boxes: Dict[int, QComboBox] = {}
+        for bit_, label in LAMPS:
+            col = QVBoxLayout()
+            lab = QLabel(label.split(" (")[0])
+            lab.setAlignment(Qt.AlignCenter)
+            cb = QComboBox()
+            cb.addItem("Off", 0)
+            cb.addItem("On", 1)
+            cb.addItem("Flashing", 2)
+            col.addWidget(lab)
+            col.addWidget(cb)
+            lamp_row.addLayout(col)
+            self.idle_boxes[bit_] = cb
+        g2.addLayout(lamp_row, 3, 0, 1, 5)
+
+        row2 = QHBoxLayout()
+        self.btn_write_cfg = QPushButton("Write to panel")
+        self.lbl_cfg = QLabel("Connect to the panel to read its settings")
+        self.lbl_cfg.setStyleSheet("color: gray;")
+        row2.addWidget(self.btn_write_cfg)
+        row2.addWidget(self.lbl_cfg, 1)
+        g2.addLayout(row2, 4, 0, 1, 5)
+        set_page = QWidget()
+        sv = QVBoxLayout(set_page)
+        sv.addWidget(grp2)
+        sv.addStretch(1)
+        self.tabs.addTab(set_page, "Panel settings")
+        v.addWidget(self.tabs, 1)
+        self._set_cfg_enabled(False)
 
         # options + test
         row = QHBoxLayout()
@@ -265,6 +327,9 @@ class MainWindow(QMainWindow):
         self.btn_preview.clicked.connect(lambda: self.link.send(f"P {self.spn_tone.value()}"))
         self.btn_stop.clicked.connect(lambda: self.link.send("X"))
         self.btn_lamptest.clicked.connect(lambda: self.link.send("LT"))
+        self.btn_startup_prev.clicked.connect(lambda: self.link.send(f"P {self.spn_startup.value()}"))
+        self.btn_write_cfg.clicked.connect(self._write_cfg)
+        self.link.config.connect(self._on_config)
 
         self.link.status.connect(self._on_link_status)
         self.link.connected.connect(self._on_connected)
@@ -327,12 +392,47 @@ class MainWindow(QMainWindow):
             self._set_live(self.live_labels[inp.id], False, inp.kind == "estop")
         self.lbl_status.setText("Disconnected")
         self.lbl_status.setStyleSheet("font-weight: bold; color: #868e96;")
+        self._set_cfg_enabled(False)
+        self.lbl_cfg.setText("Connect to the panel to read its settings")
 
     def _on_state(self, mask: int, ready: bool) -> None:
         self.engine.on_state(mask, ready)
         for inp in INPUTS:
             self._set_live(self.live_labels[inp.id], bool(mask >> inp.bit & 1), inp.kind == "estop")
         self._update_status()
+
+    def _set_cfg_enabled(self, on: bool) -> None:
+        for w in (self.spn_startup, self.btn_startup_prev, self.spn_test, self.spn_deb,
+                  self.sld_boot_vol, self.btn_write_cfg, *self.idle_boxes.values()):
+            w.setEnabled(on)
+
+    def _on_config(self, c: PanelConfig) -> None:
+        self.spn_startup.setValue(c.startup_track)
+        self.spn_test.setValue(c.lamp_test_ms / 1000.0)
+        self.spn_deb.setValue(c.debounce_ms)
+        self.sld_boot_vol.setValue(c.volume)
+        for bit_, cb in self.idle_boxes.items():
+            state = 2 if (c.idle_flash >> bit_) & 1 else (1 if (c.idle_on >> bit_) & 1 else 0)
+            cb.setCurrentIndex(state)
+        self._set_cfg_enabled(True)
+        self.lbl_cfg.setText("Loaded from panel")
+
+    def _write_cfg(self) -> None:
+        on = flash = 0
+        for bit_, cb in self.idle_boxes.items():
+            if cb.currentData() == 1:
+                on |= 1 << bit_
+            elif cb.currentData() == 2:
+                flash |= 1 << bit_
+        cfg = PanelConfig(
+            startup_track=self.spn_startup.value(),
+            lamp_test_ms=int(round(self.spn_test.value() * 1000)),
+            debounce_ms=self.spn_deb.value(),
+            volume=self.sld_boot_vol.value(),
+            idle_on=on, idle_flash=flash,
+        )
+        self.link.send(cfg.to_line())
+        self.lbl_cfg.setText("Saved to panel")
 
     def _on_tracks(self, count: int) -> None:
         self.lbl_tracks.setText(f"{count} audio file(s) on SD card")

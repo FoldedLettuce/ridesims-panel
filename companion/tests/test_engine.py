@@ -242,3 +242,14 @@ def test_estop_lamp_always_flashes_by_default():
         lamps = [x for x in r.sent if x.startswith("L ")]
         seen.add(bool(int(lamps[-1].split()[1], 16) & lamp))
     assert seen == {True, False}
+
+
+def test_parse_config_roundtrip():
+    from ridesims_panel.protocol import PanelConfig
+    msg = parse_line("C 1 2500 25 20 0 1")
+    assert msg[0] == "config"
+    c = msg[1]
+    assert (c.startup_track, c.lamp_test_ms, c.debounce_ms, c.volume, c.idle_on, c.idle_flash) == (1, 2500, 25, 20, 0, 1)
+    assert c.to_line() == "C 1 2500 25 20 0 1"
+    assert parse_line(PanelConfig(3, 1000, 30, 15, 0x4A, 0x01).to_line())[1].idle_on == 0x4A
+    assert parse_line("C 1 2") is None or parse_line("C 1 2")[0] != "config"
