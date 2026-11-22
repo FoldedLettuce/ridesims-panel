@@ -37,7 +37,7 @@
   Wiring (see docs/WIRING.md)
 */
 
-#define FW_VERSION "0.0.2"
+#define FW_VERSION "0.0.4"
 #define PROTOCOL_VERSION 3
 
 #include <EEPROM.h>

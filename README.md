@@ -3,7 +3,7 @@
 A physical control panel for [ridesims.com](https://ridesims.com) (and other ride sims), built on an Arduino
 Leonardo with a companion app for Windows.
 
-Current version: **0.0.3**. Versions stay below 1.0 until the main release is final.
+Current version: **0.0.4**. Versions stay below 1.0 until the main release is final.
 
 ## How it works
 
@@ -72,8 +72,8 @@ Pushing to `main` builds the `.exe` in GitHub Actions and test-compiles the firm
 number shows up, the workflow also publishes a **GitHub release** with both files, named with the version:
 
 ```
-RideSimsPanel-0.0.3.exe
-RideSimsPanel-Firmware-0.0.2.ino
+RideSimsPanel-0.0.4.exe
+RideSimsPanel-Firmware-0.0.4.ino
 ```
 
 To release: bump `__version__` in `companion/ridesims_panel/__init__.py`, commit, push to `main`. A version that
