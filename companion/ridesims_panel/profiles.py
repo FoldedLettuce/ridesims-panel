@@ -190,6 +190,7 @@ class ProfileStore:
         "send_keys": True,
         "pause_when_focused": True,
         "check_updates": True,
+        "theme": "dark",
     }
 
     def __init__(self, root: Optional[Path] = None) -> None:

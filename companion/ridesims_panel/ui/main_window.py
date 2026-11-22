@@ -7,7 +7,7 @@ from typing import Dict, Optional
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGroupBox,
     QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QMainWindow, QMenu,
@@ -25,6 +25,7 @@ from ..profiles import (
     Profile, ProfileStore, export_bundle, parse_import,
 )
 from ..protocol import INPUTS, LAMPS, PanelConfig
+from .theme import THEMES, apply_theme
 from .widgets import KeyEdit
 
 COL_NAME, COL_LIVE, COL_MODE, COL_KEY, COL_KEY2, COL_LAMP = range(6)
@@ -37,6 +38,7 @@ class MainWindow(QMainWindow):
         self.resize(1240, 900)
 
         self.store = store or ProfileStore()
+        self.store.settings["theme"] = apply_theme(self.store.settings.get("theme", "dark"))
         self.profile = Profile()
         self._loading = False
         self._refreshing = False
@@ -833,7 +835,22 @@ class MainWindow(QMainWindow):
         self._write_export("Export this profile", f"{self.profile.name}.json", [self.profile])
 
     # ---------------------------------------------------------- menu/update --
+    def _set_theme(self, name: str) -> None:
+        self._setting("theme", apply_theme(name))
+
     def _build_menu(self) -> None:
+        view = self.menuBar().addMenu("&View")
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        self.theme_actions = {}
+        for name in THEMES:
+            act = QAction(f"{name.capitalize()} mode", self)
+            act.setCheckable(True)
+            act.setChecked(self.store.settings.get("theme") == name)
+            act.triggered.connect(lambda _c=False, n=name: self._set_theme(n))
+            group.addAction(act)
+            view.addAction(act)
+            self.theme_actions[name] = act
         m = self.menuBar().addMenu("&Help")
         act = QAction("Check for updates...", self)
         act.triggered.connect(lambda: self._check_updates(manual=True))

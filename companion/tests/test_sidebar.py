@@ -111,3 +111,16 @@ def test_import_all_into_empty_store(app, tmp_path, monkeypatch):
     w._import_profile()
     assert store.list_names() == ["A", "B", "C", "Default"]
     w.close()
+
+
+def test_dark_by_default_and_switchable(win):
+    from PySide6.QtGui import QPalette
+    assert win.store.settings["theme"] == "dark"
+    assert win.theme_actions["dark"].isChecked()
+    dark_bg = QApplication.instance().palette().color(QPalette.Window).lightness()
+    win.theme_actions["light"].trigger()
+    assert win.store.settings["theme"] == "light"
+    assert QApplication.instance().palette().color(QPalette.Window).lightness() > dark_bg
+    win.theme_actions["dark"].trigger()
+    assert win.store.settings["theme"] == "dark"
+    assert QApplication.instance().palette().color(QPalette.Window).lightness() == dark_bg

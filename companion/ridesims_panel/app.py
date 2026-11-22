@@ -33,7 +33,6 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("RideSims Panel Companion")
     app.setApplicationVersion(__version__)
-    app.setStyle("Fusion")
     win = MainWindow()
     win.show()
     return app.exec()

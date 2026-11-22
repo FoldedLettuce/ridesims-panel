@@ -3,7 +3,7 @@
 A physical control panel for [ridesims.com](https://ridesims.com) (and other ride sims), built on an Arduino
 Leonardo with a companion app for Windows.
 
-Current version: **0.0.5**. Versions stay below 1.0 until the main release is final.
+Current version: **0.0.6**. Versions stay below 1.0 until the main release is final.
 
 ## How it works
 
@@ -43,6 +43,7 @@ An installed copy updates itself: it downloads the new Setup, runs it silently, 
     them, keep both, or skip them. Right-click a ride > *Export this profile only* for just one.
   - They save automatically to `%APPDATA%\RideSimsPanel\profiles` (Help > Open profiles and settings folder),
     which is separate from the program, so installing, updating, or uninstalling never touches them.
+- **Theme:** dark by default. Switch under **View** (Dark mode / Light mode), and it is remembered.
 - **Per control:** what it does when operated (hold the key while active, tap on activation, tap one key on and
   another off for switches, or nothing), the key or combo (type it or press **Rec**), and the lamp behavior
   (off, on, flashing, on while active, on while not active).
@@ -88,8 +89,8 @@ Pushing to `main` builds the `.exe` in GitHub Actions and test-compiles the firm
 number shows up, the workflow also publishes a **GitHub release** with both files, named with the version:
 
 ```
-RideSimsPanel-Setup-0.0.5.exe     the installer (what most people want)
-RideSimsPanel-0.0.5.exe           portable single exe
+RideSimsPanel-Setup-0.0.6.exe     the installer (what most people want)
+RideSimsPanel-0.0.6.exe           portable single exe
 RideSimsPanel-Firmware-0.0.4.ino
 ```
 
