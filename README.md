@@ -3,7 +3,7 @@
 A physical control panel for [ridesims.com](https://ridesims.com) (and other ride sims), built on an Arduino
 Leonardo with a companion app for Windows.
 
-Current version: **0.0.4**. Versions stay below 1.0 until the main release is final.
+Current version: **0.0.5**. Versions stay below 1.0 until the main release is final.
 
 ## How it works
 
@@ -22,11 +22,27 @@ are steady or flashing when no companion is running. With no companion, the pane
 tone, runs the lamp test, and then shows that standalone lamp pattern (default: E-stop lamp flashing). It
 cannot send keystrokes without the companion.
 
+## Install
+
+Download **`RideSimsPanel-Setup-<version>.exe`** from the [Releases](../../releases) page and run it. It installs
+for your user account only (no admin prompt), adds a Start menu entry (and optionally a desktop shortcut and
+start-with-Windows), and shows up under Windows **Installed apps** so you can uninstall it normally. Profiles and
+settings stay in `%APPDATA%\RideSimsPanel`. The uninstaller asks whether to delete them (default: keep).
+
+An installed copy updates itself: it downloads the new Setup, runs it silently, and reopens. The loose
+`RideSimsPanel-<version>.exe` is still attached to each release for people who want a portable copy.
+
 ## Companion app
 
-- **Profiles** (one per ride): create, duplicate, rename, delete, import and export as JSON. They save
-  automatically to `%APPDATA%\RideSimsPanel\profiles` (Help > Open profiles and settings folder), which is
-  separate from the program, so updating or replacing the `.exe` never touches them.
+- **Profiles** (one per ride) are listed down the left side with a search box (Ctrl+F), so a long list stays
+  easy to get around: type part of a ride name, press Enter to open the first match. They are sorted by name
+  (Ride 2 before Ride 10). You can create, duplicate, rename and delete them there, and right-click a ride for
+  the same actions.
+  - **Export all...** saves every profile into one file. **Import...** loads that file (or an older
+    single-profile file, or several files at once) and asks what to do about rides that already exist: replace
+    them, keep both, or skip them. Right-click a ride > *Export this profile only* for just one.
+  - They save automatically to `%APPDATA%\RideSimsPanel\profiles` (Help > Open profiles and settings folder),
+    which is separate from the program, so installing, updating, or uninstalling never touches them.
 - **Per control:** what it does when operated (hold the key while active, tap on activation, tap one key on and
   another off for switches, or nothing), the key or combo (type it or press **Rec**), and the lamp behavior
   (off, on, flashing, on while active, on while not active).
@@ -60,8 +76,8 @@ pattern (default: E-stop lamp flashing). It cannot send keystrokes without the c
 ### Updates
 
 The app checks GitHub releases when it launches (turn that off under Help) and on **Help > Check for updates**.
-If there is a newer version it asks, downloads the new `.exe` next to the old one, verifies it, restarts into
-it, and deletes the old one. This needs the repo (or at least its releases) to be **public**. If the app is
+If there is a newer version it asks, downloads it, verifies it, and restarts into it. An installed copy runs the
+new Setup silently. A loose `.exe` is replaced by the new `.exe` next to it. This needs the repo (or at least its releases) to be **public**. If the app is
 running from Python source instead of the `.exe`, it just opens the releases page.
 
 If the app ever closes unexpectedly, look at `crash.log` in the profiles and settings folder.
@@ -72,7 +88,8 @@ Pushing to `main` builds the `.exe` in GitHub Actions and test-compiles the firm
 number shows up, the workflow also publishes a **GitHub release** with both files, named with the version:
 
 ```
-RideSimsPanel-0.0.4.exe
+RideSimsPanel-Setup-0.0.5.exe     the installer (what most people want)
+RideSimsPanel-0.0.5.exe           portable single exe
 RideSimsPanel-Firmware-0.0.4.ino
 ```
 

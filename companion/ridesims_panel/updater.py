@@ -1,7 +1,12 @@
-"""Check GitHub releases for a newer version, download it, and swap the exe.
+"""Check GitHub releases for a newer version, download it, and apply it.
+
+Two kinds of install are handled:
+  * installed with the Setup program: download RideSimsPanel-Setup-<version>.exe and run it silently
+    (it upgrades in place, keeps the profiles, and starts the app again);
+  * a loose RideSimsPanel-<version>.exe: download the new exe next to the old one and swap them.
 
 Needs the repo to be public (or at least its releases to be readable without a token).
-The app only ever downloads the .exe asset from this project's own releases page.
+The app only ever downloads .exe assets from this project's own releases page.
 """
 
 import hashlib
@@ -26,7 +31,8 @@ from .profiles import data_dir
 REPO = "FoldedLettuce/ridesims-panel"
 API_URL = f"https://api.github.com/repos/{REPO}/releases?per_page=15"
 RELEASES_PAGE = f"https://github.com/{REPO}/releases"
-ASSET_RE = re.compile(r"^RideSimsPanel-[0-9][^/\\]*\.exe$", re.I)
+ASSET_RE = re.compile(r"^RideSimsPanel-[0-9][^/\\]*\.exe$", re.I)          # loose exe
+SETUP_RE = re.compile(r"^RideSimsPanel-Setup-[0-9][^/\\]*\.exe$", re.I)    # installer
 USER_AGENT = f"RideSimsPanel/{__version__} (updater)"
 
 
@@ -47,8 +53,11 @@ class ReleaseInfo:
     sha256: str
 
 
-def pick_release(releases: list, current: str) -> Optional[ReleaseInfo]:
-    """Newest non-draft release (pre-releases count) that has an exe, if newer than `current`."""
+def pick_release(releases: list, current: str, want_setup: bool = False) -> Optional[ReleaseInfo]:
+    """Newest non-draft release (pre-releases count) that has the right exe, if newer than `current`.
+
+    want_setup picks releases that carry the installer, for copies that were installed with it."""
+    pattern = SETUP_RE if want_setup else ASSET_RE
     cur = parse_version(current)
     best = None
     for r in releases:
@@ -57,7 +66,7 @@ def pick_release(releases: list, current: str) -> Optional[ReleaseInfo]:
         v = parse_version(r.get("tag_name", ""))
         if v is None:
             continue
-        asset = next((a for a in r.get("assets", []) if ASSET_RE.match(a.get("name", ""))), None)
+        asset = next((a for a in r.get("assets", []) if pattern.match(a.get("name", ""))), None)
         if asset is None:
             continue
         if best is None or v > best[0]:
@@ -83,7 +92,7 @@ def _open(url: str, timeout: float = 20):
     return urllib.request.urlopen(req, timeout=timeout)
 
 
-def fetch_latest(current: str, api_url: Optional[str] = None) -> Optional[ReleaseInfo]:
+def fetch_latest(current: str, api_url: Optional[str] = None, want_setup: Optional[bool] = None) -> Optional[ReleaseInfo]:
     """Raises RuntimeError with a friendly message if the releases cannot be read."""
     try:
         with _open(api_url or API_URL) as resp:
@@ -96,7 +105,7 @@ def fetch_latest(current: str, api_url: Optional[str] = None) -> Optional[Releas
         raise RuntimeError(f"GitHub answered HTTP {e.code}.")
     except (urllib.error.URLError, OSError, ValueError) as e:
         raise RuntimeError(f"Could not reach GitHub ({e}).")
-    return pick_release(data, current)
+    return pick_release(data, current, is_installed() if want_setup is None else want_setup)
 
 
 def download_asset(
@@ -147,8 +156,15 @@ def can_self_update() -> bool:
     return sys.platform == "win32" and bool(getattr(sys, "frozen", False))
 
 
+def is_installed() -> bool:
+    """True when running from a copy that the Setup program installed (it leaves unins000.exe beside the app)."""
+    return can_self_update() and (Path(sys.executable).parent / "unins000.exe").exists()
+
+
 def download_dir() -> Path:
-    """Next to the running exe when we can write there, otherwise in the data folder."""
+    """Installer downloads go to the data folder. A loose exe goes next to itself when we can write there."""
+    if is_installed():
+        return data_dir() / "updates"
     if can_self_update():
         d = Path(sys.executable).parent
         try:
@@ -159,6 +175,33 @@ def download_dir() -> Path:
         except OSError:
             pass
     return data_dir() / "updates"
+
+
+def cleanup_downloads() -> None:
+    """Delete installers left over from earlier updates."""
+    d = data_dir() / "updates"
+    try:
+        for f in d.glob("RideSimsPanel-*"):
+            f.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def install_and_relaunch(setup_exe: Path) -> None:
+    """Run the downloaded installer silently. It replaces the app in place and starts it again."""
+    env = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1")
+    CREATE_NO_WINDOW, DETACHED_PROCESS = 0x08000000, 0x00000008
+    subprocess.Popen(
+        [str(setup_exe), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"],
+        creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS, close_fds=True, env=env,
+    )
+
+
+def apply_update(downloaded: Path) -> None:
+    if is_installed():
+        install_and_relaunch(downloaded)
+    else:
+        swap_and_relaunch(downloaded)
 
 
 def swap_and_relaunch(new_exe: Path) -> None:

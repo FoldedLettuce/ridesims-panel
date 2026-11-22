@@ -7,12 +7,12 @@ from typing import Dict, Optional
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QDesktopServices
+from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGroupBox,
-    QHBoxLayout, QHeaderView, QInputDialog, QLabel, QMainWindow, QMessageBox,
-    QPlainTextEdit, QProgressBar, QProgressDialog, QPushButton, QSlider, QSpinBox, QTableWidget,
-    QVBoxLayout, QWidget, QGridLayout, QTabWidget,
+    QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QMainWindow, QMenu,
+    QMessageBox, QPlainTextEdit, QProgressBar, QProgressDialog, QPushButton, QSlider, QSpinBox,
+    QTableWidget, QVBoxLayout, QWidget, QGridLayout, QTabWidget,
 )
 
 from .. import PROTOCOL_VERSION, __version__
@@ -22,7 +22,7 @@ from ..keys import make_sender
 from ..link import PanelLink, describe_port, list_ports
 from ..profiles import (
     DISPATCH_LABELS, DISPATCH_MODES, LAMP_LABELS, LAMP_MODES, MODE_LABELS, MODES,
-    Profile, ProfileStore,
+    Profile, ProfileStore, export_bundle, parse_import,
 )
 from ..protocol import INPUTS, LAMPS, PanelConfig
 from .widgets import KeyEdit
@@ -34,17 +34,19 @@ class MainWindow(QMainWindow):
     def __init__(self, store: Optional[ProfileStore] = None) -> None:
         super().__init__()
         self.setWindowTitle(f"RideSims Panel Companion v{__version__}")
-        self.resize(960, 900)
+        self.resize(1240, 900)
 
         self.store = store or ProfileStore()
         self.profile = Profile()
         self._loading = False
+        self._refreshing = False
         self._fw_version = ""
         self._proto = PROTOCOL_VERSION
         self._cfg: Optional[PanelConfig] = None
         self._manual_update = False
         self._dl_dialog: Optional[QProgressDialog] = None
         self.updater = upd.Updater(self)
+        upd.cleanup_downloads()
 
         self.link = PanelLink(self)
         self.engine = Engine(make_sender(), self.link.send, log=self.append_log)
@@ -80,7 +82,12 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         root = QWidget()
         self.setCentralWidget(root)
-        v = QVBoxLayout(root)
+        outer = QHBoxLayout(root)
+        outer.addWidget(self._build_sidebar())
+        main = QWidget()
+        outer.addWidget(main, 1)
+        v = QVBoxLayout(main)
+        v.setContentsMargins(0, 0, 0, 0)
 
         # connection row
         row = QHBoxLayout()
@@ -100,25 +107,10 @@ class MainWindow(QMainWindow):
         row.addWidget(self.lbl_status)
         v.addLayout(row)
 
-        # profile row
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Profile:"))
-        self.cmb_profile = QComboBox()
-        self.cmb_profile.setMinimumWidth(240)
-        row.addWidget(self.cmb_profile)
-        self.btn_new = QPushButton("New")
-        self.btn_dup = QPushButton("Duplicate")
-        self.btn_ren = QPushButton("Rename")
-        self.btn_del = QPushButton("Delete")
-        self.btn_imp = QPushButton("Import...")
-        self.btn_exp = QPushButton("Export...")
-        for b in (self.btn_new, self.btn_dup, self.btn_ren, self.btn_del, self.btn_imp, self.btn_exp):
-            row.addWidget(b)
-        row.addStretch(1)
-        lbl = QLabel("Changes save automatically")
-        lbl.setStyleSheet("color: gray;")
-        row.addWidget(lbl)
-        v.addLayout(row)
+        # which profile is being edited
+        self.lbl_current = QLabel("")
+        self.lbl_current.setStyleSheet("font-size: 15px; font-weight: bold;")
+        v.addWidget(self.lbl_current)
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Dispatch buttons:"))
@@ -315,6 +307,45 @@ class MainWindow(QMainWindow):
         self.log_box.setMaximumHeight(90)
         v.addWidget(self.log_box)
 
+    def _build_sidebar(self) -> QWidget:
+        """Searchable list of every profile (one per ride) with the profile buttons under it."""
+        box = QWidget()
+        box.setFixedWidth(280)
+        sv = QVBoxLayout(box)
+        sv.setContentsMargins(0, 0, 0, 0)
+        head = QLabel("Rides")
+        head.setStyleSheet("font-size: 15px; font-weight: bold;")
+        sv.addWidget(head)
+        self.txt_search = QLineEdit()
+        self.txt_search.setPlaceholderText("Search rides...  (Ctrl+F)")
+        self.txt_search.setClearButtonEnabled(True)
+        sv.addWidget(self.txt_search)
+        self.lst_profiles = QListWidget()
+        self.lst_profiles.setUniformItemSizes(True)
+        self.lst_profiles.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.lst_profiles.setStyleSheet("QListWidget::item { padding: 5px 4px; }")
+        sv.addWidget(self.lst_profiles, 1)
+        self.lbl_count = QLabel("")
+        self.lbl_count.setStyleSheet("color: gray;")
+        sv.addWidget(self.lbl_count)
+
+        grid = QGridLayout()
+        self.btn_new = QPushButton("New")
+        self.btn_dup = QPushButton("Duplicate")
+        self.btn_ren = QPushButton("Rename")
+        self.btn_del = QPushButton("Delete")
+        self.btn_imp = QPushButton("Import...")
+        self.btn_exp = QPushButton("Export all...")
+        self.btn_imp.setToolTip("Load profiles from a file (a full export, or a single profile)")
+        self.btn_exp.setToolTip("Save ALL profiles into one file (a backup you can import anywhere)")
+        for i, b in enumerate((self.btn_new, self.btn_dup, self.btn_ren, self.btn_del, self.btn_imp, self.btn_exp)):
+            grid.addWidget(b, i // 2, i % 2)
+        sv.addLayout(grid)
+        note = QLabel("Changes save automatically")
+        note.setStyleSheet("color: gray;")
+        sv.addWidget(note)
+        return box
+
     @staticmethod
     def _ro_item(text: str):
         from PySide6.QtWidgets import QTableWidgetItem
@@ -343,13 +374,17 @@ class MainWindow(QMainWindow):
         self.updater.check_done.connect(self._on_update_checked)
         self.updater.progress.connect(self._on_update_progress)
         self.updater.download_done.connect(self._on_update_downloaded)
-        self.cmb_profile.activated.connect(self._on_profile_chosen)
+        self.lst_profiles.currentItemChanged.connect(self._on_profile_chosen)
+        self.lst_profiles.customContextMenuRequested.connect(self._profile_menu)
+        self.txt_search.textChanged.connect(lambda _t: self._apply_filter())
+        self.txt_search.returnPressed.connect(self._search_enter)
+        QShortcut(QKeySequence.Find, self, activated=self._focus_search)
         self.btn_new.clicked.connect(self._new_profile)
         self.btn_dup.clicked.connect(self._dup_profile)
         self.btn_ren.clicked.connect(self._rename_profile)
         self.btn_del.clicked.connect(self._delete_profile)
         self.btn_imp.clicked.connect(self._import_profile)
-        self.btn_exp.clicked.connect(self._export_profile)
+        self.btn_exp.clicked.connect(self._export_all_profiles)
 
         for inp in INPUTS:
             i = inp.id
@@ -523,14 +558,48 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ profiles --
     def _refresh_profile_list(self, select: str) -> None:
-        self.cmb_profile.blockSignals(True)
-        self.cmb_profile.clear()
-        for n in self.store.list_names():
-            self.cmb_profile.addItem(n)
-        idx = self.cmb_profile.findText(select)
-        self.cmb_profile.setCurrentIndex(max(idx, 0))
-        self.cmb_profile.blockSignals(False)
-        self._load_profile(self.cmb_profile.currentText())
+        self._refreshing = True
+        self.lst_profiles.clear()
+        names = self.store.list_names()
+        self.lst_profiles.addItems(names)
+        row = names.index(select) if select in names else 0
+        self.lst_profiles.setCurrentRow(row)
+        self._refreshing = False
+        self._apply_filter()
+        cur = self.lst_profiles.currentItem()
+        if cur is not None and cur.isHidden():       # e.g. a new profile that the search text hides
+            self.txt_search.clear()
+        if cur is not None:
+            self.lst_profiles.scrollToItem(cur)
+            self._load_profile(cur.text())
+
+    def _apply_filter(self) -> None:
+        words = self.txt_search.text().lower().split()
+        shown = 0
+        for i in range(self.lst_profiles.count()):
+            it = self.lst_profiles.item(i)
+            hide = not all(w in it.text().lower() for w in words)
+            it.setHidden(hide)
+            shown += 0 if hide else 1
+        total = self.lst_profiles.count()
+        noun = "ride" if total == 1 else "rides"
+        self.lbl_count.setText(f"{total} {noun}" if shown == total else f"{shown} of {total} {noun}")
+        cur = self.lst_profiles.currentItem()
+        if cur is not None and not cur.isHidden():
+            self.lst_profiles.scrollToItem(cur)
+
+    def _focus_search(self) -> None:
+        self.txt_search.setFocus()
+        self.txt_search.selectAll()
+
+    def _search_enter(self) -> None:
+        """Enter in the search box opens the first match."""
+        for i in range(self.lst_profiles.count()):
+            it = self.lst_profiles.item(i)
+            if not it.isHidden():
+                self.lst_profiles.setCurrentItem(it)
+                self.lst_profiles.setFocus()
+                return
 
     def _load_profile(self, name: str) -> None:
         p = self.store.load(name)
@@ -538,6 +607,7 @@ class MainWindow(QMainWindow):
             p = Profile(name=name)
         self.profile = p
         self._setting("active_profile", p.name)
+        self.lbl_current.setText(f"Editing: {p.name}")
         self._populate_widgets()
         self.engine.set_profile(p)
 
@@ -580,8 +650,21 @@ class MainWindow(QMainWindow):
         if not self._loading:
             self.store.save(self.profile)
 
-    def _on_profile_chosen(self, _idx: int) -> None:
-        self._load_profile(self.cmb_profile.currentText())
+    def _on_profile_chosen(self, cur, _prev) -> None:
+        if self._refreshing or cur is None or cur.text() == self.profile.name:
+            return
+        self._load_profile(cur.text())
+
+    def _profile_menu(self, pos) -> None:
+        if self.lst_profiles.itemAt(pos) is None:
+            return
+        m = QMenu(self)
+        m.addAction("Rename...", self._rename_profile)
+        m.addAction("Duplicate", self._dup_profile)
+        m.addAction("Export this profile only...", self._export_current_profile)
+        m.addSeparator()
+        m.addAction("Delete", self._delete_profile)
+        m.exec(self.lst_profiles.viewport().mapToGlobal(pos))
 
     def _update_row_enabled(self, input_id: str) -> None:
         mode = self._binding(input_id).mode
@@ -686,26 +769,68 @@ class MainWindow(QMainWindow):
         self._refresh_profile_list(select=self.store.list_names()[0])
 
     def _import_profile(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Import profile", "", "Profile (*.json)")
+        paths, _ = QFileDialog.getOpenFileNames(self, "Import profiles", "", "Profiles (*.json)")
+        if not paths:
+            return
+        profiles, problems = [], []
+        for path in paths:
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    profiles.extend(parse_import(json.load(f)))
+            except (OSError, ValueError, TypeError, AttributeError) as e:
+                problems.append(f"{Path(path).name}: {e}")
+        if problems:
+            QMessageBox.warning(self, "Import", "Could not read:\n" + "\n".join(problems))
+        if not profiles:
+            return
+        mode = "keep_both"
+        dupes = self.store.conflicts(profiles)
+        if dupes:
+            shown = ", ".join(dupes[:4]) + (f" and {len(dupes) - 4} more" if len(dupes) > 4 else "")
+            box = QMessageBox(self)
+            box.setWindowTitle("Import")
+            box.setText(f"{len(dupes)} of the {len(profiles)} profiles already exist here: {shown}.")
+            box.setInformativeText("What should happen to the ones that already exist?")
+            b_replace = box.addButton("Replace them", QMessageBox.AcceptRole)
+            b_keep = box.addButton("Keep both", QMessageBox.AcceptRole)
+            b_skip = box.addButton("Skip them", QMessageBox.AcceptRole)
+            box.addButton(QMessageBox.Cancel)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is b_replace:
+                mode = "replace"
+            elif clicked is b_keep:
+                mode = "keep_both"
+            elif clicked is b_skip:
+                mode = "skip"
+            else:
+                return
+        saved = self.store.import_profiles(profiles, mode)
+        self._refresh_profile_list(select=saved[0] if saved else self.profile.name)
+        self.statusBar().showMessage(f"Imported {len(saved)} profile(s)", 6000)
+
+    def _write_export(self, title: str, default_name: str, profiles) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, title, default_name, "Profiles (*.json)")
         if not path:
             return
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                p = Profile.from_dict(json.load(f))
-        except (OSError, ValueError, TypeError) as e:
-            QMessageBox.warning(self, "Import", f"Could not read that file: {e}")
-            return
-        p.name = self.store.unique_name(p.name)
-        self.store.save(p)
-        self._refresh_profile_list(select=p.name)
-
-    def _export_profile(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export profile", f"{self.profile.name}.json", "Profile (*.json)"
-        )
-        if path:
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(self.profile.to_dict(), f, indent=2)
+                json.dump(export_bundle(profiles, __version__), f, indent=2)
+        except OSError as e:
+            QMessageBox.warning(self, "Export", f"Could not save the file: {e}")
+            return
+        self.statusBar().showMessage(f"Exported {len(profiles)} profile(s) to {path}", 8000)
+
+    def _export_all_profiles(self) -> None:
+        self._save()
+        profiles = self.store.load_all()
+        self._write_export(
+            "Export all profiles", f"RideSims-Panel-profiles-{time.strftime('%Y-%m-%d')}.json", profiles
+        )
+
+    def _export_current_profile(self) -> None:
+        self._save()
+        self._write_export("Export this profile", f"{self.profile.name}.json", [self.profile])
 
     # ---------------------------------------------------------- menu/update --
     def _build_menu(self) -> None:
@@ -784,7 +909,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Update", "Downloaded. The app will restart to finish the update.")
         self.engine.release_all()
         self.link.stop()
-        upd.swap_and_relaunch(Path(path))
+        upd.apply_update(Path(path))
         QApplication.quit()
 
     # --------------------------------------------------------------- close --

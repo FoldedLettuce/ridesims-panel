@@ -60,19 +60,29 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r companion/requirements-dev.txt
-      - name: Build exe
+      - name: Build exe and installer
         working-directory: companion
         run: |
           VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' ridesims_panel/__init__.py)
           echo "Building $VERSION"
+          # Loose exe: what copies from before the installer existed update to
           pyinstaller --onefile --windowed --name "RideSimsPanel-$VERSION" run.py
-          ls dist
+          # One-folder build: this is what the installer packages (starts much faster than --onefile)
+          pyinstaller --noconfirm --onedir --windowed --name RideSimsPanel \
+            --distpath dist-dir --workpath build-dir run.py
+          choco install innosetup -y --no-progress
+          ISCC=$(command -v iscc || echo "/c/Program Files (x86)/Inno Setup 6/ISCC.exe")
+          RSP_VERSION="$VERSION" "$ISCC" installer/RideSimsPanel.iss
+          # one flat folder, so the release step sees plain files
+          mkdir release
+          cp installer-out/RideSimsPanel-Setup-*.exe dist/RideSimsPanel-*.exe release/
+          ls -la release
       - uses: actions/upload-artifact@v4
         with:
           name: companion-windows
-          path: companion/dist/RideSimsPanel-*.exe
+          path: companion/release/*.exe
 
-  # Publishes a GitHub release (with the exe and the firmware .ino) the first time a version number
+  # Publishes a GitHub release (with the installer, the loose exe and the firmware .ino) the first time a version number
   # appears on main, or when a v* tag is pushed. A version that already has a release is skipped.
   release:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))

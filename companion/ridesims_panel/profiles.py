@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 from .protocol import INPUTS, INPUT_BY_ID
 
 SCHEMA = 1
+BUNDLE_TYPE = "ridesims-profiles"
 
 MODES = ["none", "hold", "tap", "tap_both"]
 MODE_LABELS = {
@@ -143,6 +144,42 @@ def slugify(name: str) -> str:
     return s or "profile"
 
 
+def natural_key(name: str) -> list:
+    """Sort key so "Ride 2" comes before "Ride 10" and case is ignored."""
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
+
+
+def export_bundle(profiles: List[Profile], app_version: str = "") -> dict:
+    """Everything needed to restore a set of profiles, in one file."""
+    return {
+        "type": BUNDLE_TYPE,
+        "schema": SCHEMA,
+        "app_version": app_version,
+        "profiles": [p.to_dict() for p in profiles],
+    }
+
+
+def parse_import(data) -> List[Profile]:
+    """Accepts a bundle (all profiles), a list of profiles, or a single profile file from older versions.
+
+    Raises ValueError if it is none of those."""
+    if isinstance(data, dict) and isinstance(data.get("profiles"), list):
+        items = data["profiles"]
+    elif isinstance(data, list):
+        items = data
+    elif isinstance(data, dict) and ("bindings" in data or "name" in data):
+        items = [data]
+    else:
+        raise ValueError("this is not a RideSims Panel profile file")
+    out = []
+    for d in items:
+        if isinstance(d, dict):
+            out.append(Profile.from_dict(d))
+    if not out:
+        raise ValueError("there are no profiles in this file")
+    return out
+
+
 class ProfileStore:
     """Profiles live in <data_dir>/profiles/<slug>.json, settings in settings.json."""
 
@@ -178,12 +215,41 @@ class ProfileStore:
 
     def list_names(self) -> List[str]:
         names = []
-        for f in sorted(self.dir.glob("*.json")):
+        for f in self.dir.glob("*.json"):
             try:
                 names.append(str(json.loads(f.read_text("utf-8")).get("name", f.stem)))
             except (OSError, ValueError):
                 continue
-        return names
+        return sorted(names, key=natural_key)
+
+    def load_all(self) -> List[Profile]:
+        out = []
+        for n in self.list_names():
+            p = self.load(n)
+            if p is not None:
+                out.append(p)
+        return out
+
+    def conflicts(self, profiles: List[Profile]) -> List[str]:
+        """Names in `profiles` that already exist here."""
+        have = {slugify(n).lower() for n in self.list_names()}
+        return [p.name for p in profiles if slugify(p.name).lower() in have]
+
+    def import_profiles(self, profiles: List[Profile], on_conflict: str = "keep_both") -> List[str]:
+        """Save imported profiles. on_conflict is "keep_both" (rename the newcomer), "replace" or "skip".
+
+        Returns the names that ended up saved."""
+        before = {slugify(n).lower() for n in self.list_names()}
+        saved = []
+        for p in profiles:
+            exists = slugify(p.name).lower() in before
+            if exists and on_conflict == "skip":
+                continue
+            if not (exists and on_conflict == "replace"):
+                p.name = self.unique_name(p.name)
+            self.save(p)
+            saved.append(p.name)
+        return saved
 
     def load(self, name: str) -> Optional[Profile]:
         try:

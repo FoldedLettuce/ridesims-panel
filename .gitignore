@@ -6,3 +6,7 @@ dist/
 *.spec
 out/
 .venv/
+dist-dir/
+build-dir/
+installer-out/
+release/
