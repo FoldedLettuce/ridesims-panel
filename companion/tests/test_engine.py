@@ -125,6 +125,39 @@ def test_estop_reset_full_hold():
     assert "X" not in r.sent                    # tone not cut off
 
 
+def test_estop_reset_blank_key_uses_restart_key():
+    r = Rig()
+    r.p.estop_reset.key = ""
+    r.p.bindings["restart"] = Binding("hold", "r")
+    r.engine.set_profile(r.p)
+    r.power_up()
+    r.state("power_key", "estop")
+    r.state("power_key")
+    r.state("power_key", "restart")
+    assert r.sender.held == {"r"}               # sent from the first moment
+    r.advance(2.1)
+    assert not r.engine.estop_latched           # panel e-stop cleared
+    assert r.sender.held == {"r"}               # same hold, no release and re-press
+    assert [c for c, _ in r.downs()].count(0x13) == 1
+    r.state("power_key")
+    assert r.sender.held == set()
+
+
+def test_estop_reset_hands_over_to_restart_key():
+    r = Rig()
+    r.p.bindings["restart"] = Binding("hold", "x")      # reset key is "r"
+    r.engine.set_profile(r.p)
+    r.power_up()
+    r.state("power_key", "estop")
+    r.state("power_key")
+    r.state("power_key", "restart")
+    assert r.sender.held == {"r"}
+    r.advance(2.1)
+    assert r.sender.held == {"x"}               # swapped without releasing the button
+    r.state("power_key")
+    assert r.sender.held == set()
+
+
 def test_estop_reset_released_early():
     r = Rig()
     r.power_up()

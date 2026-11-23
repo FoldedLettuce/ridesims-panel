@@ -193,7 +193,7 @@ class MainWindow(QMainWindow):
         self.spn_hold.setSingleStep(0.1)
         self.spn_hold.setSuffix(" s")
         g.addWidget(self.spn_hold, 0, 1)
-        g.addWidget(QLabel("Reset key (held the whole time)"), 0, 2)
+        g.addWidget(QLabel("Reset key (blank = Restart key)"), 0, 2)
         self.key_reset = KeyEdit()
         g.addWidget(self.key_reset, 0, 3)
 
