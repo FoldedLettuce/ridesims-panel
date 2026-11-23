@@ -193,9 +193,9 @@ class MainWindow(QMainWindow):
         self.spn_hold.setSingleStep(0.1)
         self.spn_hold.setSuffix(" s")
         g.addWidget(self.spn_hold, 0, 1)
-        g.addWidget(QLabel("Reset key (blank = Restart key)"), 0, 2)
-        self.key_reset = KeyEdit()
-        g.addWidget(self.key_reset, 0, 3)
+        lbl_rk = QLabel("Sends the Restart key the whole time it is held")
+        lbl_rk.setStyleSheet("color: gray;")
+        g.addWidget(lbl_rk, 0, 2, 1, 2)
 
         g.addWidget(QLabel("Reset tone (track #)"), 1, 0)
         self.spn_tone = QSpinBox()
@@ -397,7 +397,6 @@ class MainWindow(QMainWindow):
                 self.lamp_boxes[i].currentIndexChanged.connect(lambda _x, i=i: self._on_lamp(i))
 
         self.spn_hold.valueChanged.connect(self._on_reset_changed)
-        self.key_reset.changed.connect(lambda _t: self._on_reset_changed())
         self.spn_tone.valueChanged.connect(self._on_reset_changed)
         self.sld_vol.valueChanged.connect(self._on_volume)
         self.btn_preview.clicked.connect(lambda: self.link.send(f"P {self.spn_tone.value()}"))
@@ -642,7 +641,6 @@ class MainWindow(QMainWindow):
                 self.lamp_boxes[inp.id].setCurrentIndex(LAMP_MODES.index(b.lamp))
             self._update_row_enabled(inp.id)
         self.spn_hold.setValue(p.estop_reset.hold_ms / 1000.0)
-        self.key_reset.set_text(p.estop_reset.key)
         self.spn_tone.setValue(p.estop_reset.tone)
         self.sld_vol.setValue(p.volume)
         self.lbl_vol.setText(str(p.volume))
@@ -720,7 +718,6 @@ class MainWindow(QMainWindow):
             return
         er = self.profile.estop_reset
         er.hold_ms = int(round(self.spn_hold.value() * 1000))
-        er.key = self.key_reset.text()
         er.tone = self.spn_tone.value()
         self._save()
 

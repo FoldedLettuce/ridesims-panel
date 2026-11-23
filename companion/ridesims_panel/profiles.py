@@ -61,11 +61,10 @@ class Binding:
 @dataclass
 class EstopReset:
     hold_ms: int = 3000
-    key: str = ""
     tone: int = 2          # /MP3/0002.mp3 on the SD card
 
     def to_dict(self) -> dict:
-        return {"hold_ms": self.hold_ms, "key": self.key, "tone": self.tone}
+        return {"hold_ms": self.hold_ms, "tone": self.tone}
 
 
 def default_binding(input_id: str) -> Binding:
@@ -115,7 +114,6 @@ class Profile:
         er = d.get("estop_reset", {})
         p.estop_reset = EstopReset(
             hold_ms=max(100, min(30000, int(er.get("hold_ms", 3000)))),
-            key=str(er.get("key", "")),
             tone=max(1, min(255, int(er.get("tone", 2)))),
         )
         dm = d.get("dispatch_mode", "separate")

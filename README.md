@@ -49,8 +49,7 @@ An installed copy updates itself: it downloads the new Setup, runs it silently, 
   (off, on, flashing, on while active, on while not active).
 - **Dispatch buttons:** keep them **separate** (each has its own binding) or **linked** as one binding, either
   triggered by either button or only when both are pressed together.
-- **E-stop reset:** how long Restart must be held, the key sent the entire time (blank uses the Restart key),
-  and the tone played while holding. The key stays down from the first moment Restart is pressed until it is
+- **E-stop reset:** how long Restart must be held and the tone played while holding. Restart is always the reset button and E-stop is always E-stop. The Restart key stays down from the first moment Restart is pressed until it is
   released, and the panel's E-stop clears when the timer finishes, so one continuous hold is enough. Release
   early and it aborts and stops the tone.
 - **E-stop lamps:** the E-stop lamp flashes while idle. Press E-stop and it goes solid. Release it and the

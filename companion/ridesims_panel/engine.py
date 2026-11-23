@@ -83,12 +83,8 @@ class Engine:
         return min(1.0, (self._clock() - self._reset_start) / total)
 
     def _reset_hold_key(self) -> str:
-        """Key sent for the whole Restart hold: the reset key, or the Restart key if none is set."""
-        er_key = self.profile.estop_reset.key
-        if er_key:
-            return er_key
-        b = self.profile.bindings[RESTART.id]
-        return b.key if b.mode in ("hold", "tap", "tap_both") else ""
+        """Restart is always the reset button, so the Restart binding's key is held for the whole press."""
+        return self.profile.bindings[RESTART.id].key
 
     def _can_send(self) -> bool:
         return self.output_enabled()
@@ -262,18 +258,6 @@ class Engine:
             return True
         return False
 
-    def _hand_over_to_restart(self) -> None:
-        """Reset hold finished while Restart is still down: keep the Restart key held without a gap.
-
-        If the reset key is the same as the Restart key nothing changes (it just stays down until the button is
-        released). If they differ, swap to the Restart binding's hold key so the sim sees one continuous hold."""
-        b = self.profile.bindings[RESTART.id]
-        if b.mode != "hold" or not b.key or b.key == self._reset_key:
-            return
-        self._press(b.key)
-        self._release(self._reset_key)
-        self._reset_key = b.key
-
     def _cancel_reset(self, stop_tone: bool) -> None:
         if self._reset_start is not None:
             self._release(self._reset_key)
@@ -327,7 +311,6 @@ class Engine:
                 self._reset_done = True
                 self.estop_latched = False
                 self.log("e-stop reset complete, keep holding Restart to restart the sim")
-                self._hand_over_to_restart()
 
         # output gate closed: never leave keys stuck down
         if self.sender.held and not self._can_send():
