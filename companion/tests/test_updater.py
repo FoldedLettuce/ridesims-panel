@@ -143,3 +143,12 @@ def test_private_repo_message():
             fetch_latest("0.0.1", f"http://127.0.0.1:{srv.port}/nothing")
     finally:
         srv.close()
+
+
+def test_ssl_context_loads_bundled_certs():
+    import ssl
+    from ridesims_panel.updater import _ssl_context
+    ctx = _ssl_context()
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname
+    assert ctx.cert_store_stats()["x509_ca"] > 0

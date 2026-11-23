@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -87,9 +88,24 @@ def pick_release(releases: list, current: str, want_setup: bool = False) -> Opti
     )
 
 
+def _ssl_context() -> ssl.SSLContext:
+    """Windows' certificate store plus the CA list bundled with the app.
+
+    Some PCs are missing a root certificate that GitHub's chain needs (the update check then fails with
+    CERTIFICATE_VERIFY_FAILED). Keeping the Windows store means school or work networks that add their own
+    certificate keep working, and the bundled list covers the missing roots."""
+    ctx = ssl.create_default_context()
+    try:
+        import certifi
+        ctx.load_verify_locations(cafile=certifi.where())
+    except Exception:
+        pass
+    return ctx
+
+
 def _open(url: str, timeout: float = 20):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"})
-    return urllib.request.urlopen(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout, context=_ssl_context())
 
 
 def fetch_latest(current: str, api_url: Optional[str] = None, want_setup: Optional[bool] = None) -> Optional[ReleaseInfo]:
